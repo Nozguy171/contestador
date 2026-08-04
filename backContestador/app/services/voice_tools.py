@@ -97,7 +97,7 @@ VOICE_FUNCTION_DECLARATIONS: list[dict[str, Any]] = [
                 "payment_method": {"type": "string", "enum": ["cash", "card", "online"]},
                 "cash_change_for": {
                     "type": "string",
-                    "description": "Sólo para efectivo: monto con el que pagará si necesita cambio. Omítelo si no necesita cambio.",
+                    "description": "Sólo para entrega a domicilio pagada en efectivo: monto con el que pagará si necesita cambio. No lo uses para recoger en tienda.",
                 },
                 "delivery_address": {
                     "type": "string",

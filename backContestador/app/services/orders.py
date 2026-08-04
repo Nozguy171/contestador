@@ -142,7 +142,11 @@ def quote_voice_order(*, business, cart, checkout):
     delivery_address = str(checkout.get("delivery_address") or "").strip() or None
     notes = str(checkout.get("notes") or "").strip() or None
     cash_change_for = None
-    if payment_method == PaymentMethod.CASH and checkout.get("cash_change_for") is not None:
+    if (
+        order_type == OrderType.DELIVERY
+        and payment_method == PaymentMethod.CASH
+        and checkout.get("cash_change_for") is not None
+    ):
         try:
             cash_change_for = _to_decimal(checkout.get("cash_change_for"))
         except (InvalidOperation, ValueError) as exc:
