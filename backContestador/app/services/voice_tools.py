@@ -39,7 +39,11 @@ VOICE_FUNCTION_DECLARATIONS: list[dict[str, Any]] = [
     },
     {
         "name": "add_to_cart",
-        "description": "Agrega al carrito preliminar un producto validado por el backend.",
+        "description": (
+            "Agrega al carrito preliminar un producto validado por el backend. "
+            "Llámala inmediatamente después de conocer el producto y la cantidad; "
+            "no digas que quedó agregado sin recibir ok=true."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -53,6 +57,11 @@ VOICE_FUNCTION_DECLARATIONS: list[dict[str, Any]] = [
             },
             "required": ["id", "qty", "modifiers"],
         },
+    },
+    {
+        "name": "get_cart",
+        "description": "Consulta el carrito real de esta llamada. Úsala antes de cotizar o si crees que falta un producto.",
+        "parameters": {"type": "object", "properties": {}},
     },
     {
         "name": "remove_item",
@@ -77,7 +86,19 @@ VOICE_FUNCTION_DECLARATIONS: list[dict[str, Any]] = [
                 "payment_method": {"type": "string", "enum": ["cash", "card", "online"]},
                 "delivery_address": {
                     "type": "string",
-                    "description": "Obligatoria y completa si order_type es delivery; omítela sólo para pickup.",
+                    "description": "Compatibilidad anterior. Para delivery usa delivery_address_parts.",
+                },
+                "delivery_address_parts": {
+                    "type": "object",
+                    "description": "Usa estos campos para delivery y no una sola cadena larga.",
+                    "properties": {
+                        "street": {"type": "string", "description": "Calle o avenida."},
+                        "number": {"type": "string", "description": "Número exterior."},
+                        "colony": {"type": "string", "description": "Colonia o fraccionamiento."},
+                        "city": {"type": "string", "description": "Ciudad."},
+                        "references": {"type": "string", "description": "Referencias; usa sin referencias si no tiene."},
+                    },
+                    "required": ["street", "number", "colony", "city"],
                 },
                 "notes": {"type": "string"},
             },
@@ -159,6 +180,7 @@ class OrderTools:
         handlers = {
             "search_menu": self._search_menu,
             "get_item_options": self._get_item_options,
+            "get_cart": self._get_cart,
             "add_to_cart": self._add_to_cart,
             "remove_item": self._remove_item,
             "quote_order": self._quote_order,
@@ -221,6 +243,10 @@ class OrderTools:
 
     def _get_item_options(self, args: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "item": _product_payload(self._product(args.get("id")))}
+
+    def _get_cart(self, args: dict[str, Any]) -> dict[str, Any]:
+        del args
+        return {"ok": True, "cart": self._cart_summary()}
 
     def _add_to_cart(self, args: dict[str, Any]) -> dict[str, Any]:
         product = self._product(args.get("id"))
@@ -307,11 +333,39 @@ class OrderTools:
         return {"ok": True, "removed_line_id": line_id, "cart": self._cart_summary()}
 
     def _quote_order(self, args: dict[str, Any]) -> dict[str, Any]:
+        if not self.session.cart:
+            return {
+                "ok": False,
+                "error": "No hay productos agregados todavía; no se perdió ningún pedido. Agrega el producto y la cantidad antes de cotizar.",
+                "cart": self._cart_summary(),
+            }
+
+        address_parts = args.get("delivery_address_parts")
+        if isinstance(address_parts, dict):
+            labels = {
+                "street": "la calle",
+                "number": "el número",
+                "colony": "la colonia",
+                "city": "la ciudad",
+            }
+            missing = [label for key, label in labels.items() if not str(address_parts.get(key) or "").strip()]
+            if missing:
+                raise OrderValidationError(f"Falta confirmar {', '.join(missing)}.")
+            delivery_address = (
+                f"{str(address_parts['street']).strip()} {str(address_parts['number']).strip()}, "
+                f"colonia {str(address_parts['colony']).strip()}, {str(address_parts['city']).strip()}"
+            )
+            references = str(address_parts.get("references") or "").strip()
+            if references:
+                delivery_address += f". Referencias: {references}"
+        else:
+            delivery_address = str(args.get("delivery_address") or "").strip() or None
+
         self.session.checkout = {
             "customer_name": str(args.get("customer_name") or "").strip(),
             "order_type": str(args.get("order_type") or "").strip(),
             "payment_method": str(args.get("payment_method") or "").strip(),
-            "delivery_address": str(args.get("delivery_address") or "").strip() or None,
+            "delivery_address": delivery_address,
             "notes": str(args.get("notes") or "").strip() or None,
         }
         quote = quote_voice_order(
