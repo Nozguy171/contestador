@@ -53,7 +53,9 @@ class GeminiLiveProvider:
             "tools": [{"function_declarations": self.function_declarations}],
         }
         if self.runtime.gemini_model.startswith("gemini-3.1"):
-            config["thinking_config"] = {"thinking_level": "minimal"}
+            # Low gives the live model a little more room to resolve quantities,
+            # addresses, and tool order without the latency of medium/high.
+            config["thinking_config"] = {"thinking_level": "low"}
         return config
 
     @asynccontextmanager
