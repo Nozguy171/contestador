@@ -175,6 +175,18 @@ class OrderTools:
 
     def _search_menu(self, args: dict[str, Any]) -> dict[str, Any]:
         query = str(args.get("query") or "").strip()
+        normalized_query = query.casefold().strip(" ¿?¡!")
+        if normalized_query in {
+            "menu",
+            "menú",
+            "productos",
+            "que tienen",
+            "qué tienen",
+            "que hay",
+            "qué hay",
+            "todo",
+        }:
+            query = ""
         products = Product.query.filter_by(
             business_id=self.session.tenant_id,
             is_active=True,

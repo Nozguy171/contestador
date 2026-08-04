@@ -14,6 +14,39 @@ DAY_LABELS = {
     6: "domingo",
 }
 
+GEMINI_VOICE_NAMES = (
+    "Zephyr",
+    "Puck",
+    "Charon",
+    "Kore",
+    "Fenrir",
+    "Leda",
+    "Orus",
+    "Aoede",
+    "Callirrhoe",
+    "Autonoe",
+    "Enceladus",
+    "Iapetus",
+    "Umbriel",
+    "Algieba",
+    "Despina",
+    "Erinome",
+    "Algenib",
+    "Rasalgethi",
+    "Laomedeia",
+    "Achernar",
+    "Alnilam",
+    "Schedar",
+    "Gacrux",
+    "Pulcherrima",
+    "Achird",
+    "Zubenelgenubi",
+    "Vindemiatrix",
+    "Sadachbia",
+    "Sadaltager",
+    "Sulafat",
+)
+
 
 def _time_to_string(value: Any) -> str | None:
     if value is None:
@@ -43,7 +76,12 @@ class VoiceRuntimeConfig:
     voice_silence_duration_ms: int
 
     @classmethod
-    def from_app_config(cls, config: Any) -> "VoiceRuntimeConfig":
+    def from_app_config(cls, config: Any, business: Any = None) -> "VoiceRuntimeConfig":
+        business_voice = (
+            getattr(getattr(business, "settings", None), "voice_name", None)
+            if business
+            else None
+        )
         return cls(
             public_base_url=config.get("PUBLIC_BASE_URL", "").rstrip("/"),
             twilio_account_sid=config.get("TWILIO_ACCOUNT_SID", ""),
@@ -53,7 +91,11 @@ class VoiceRuntimeConfig:
             gemini_api_key=config.get("GEMINI_API_KEY", ""),
             gemini_model=config.get("GEMINI_MODEL", "gemini-3.1-flash-live-preview"),
             gemini_http_api_version=config.get("GEMINI_HTTP_API_VERSION", "v1beta"),
-            gemini_voice_name=config.get("GEMINI_VOICE_NAME", "Aoede"),
+            gemini_voice_name=(
+                business_voice
+                if business_voice in GEMINI_VOICE_NAMES
+                else config.get("GEMINI_VOICE_NAME", "Iapetus")
+            ),
             gemini_language_code=config.get("GEMINI_LANGUAGE_CODE", "es-MX"),
             voice_webhook_path=config.get("VOICE_WEBHOOK_PATH", "/voice/incoming"),
             voice_stream_path=config.get("VOICE_STREAM_PATH", "/api/v1/voice/twilio/media-stream"),
@@ -303,11 +345,14 @@ Reglas:
 - No inventes productos, horarios, precios ni promociones.
 - Nunca aceptes ni propongas un tenantId o businessId: la sesión ya está ligada al negocio correcto.
 - No calcules precios ni asumas disponibilidad. Usa siempre las herramientas del backend.
-- Para conocer el menú usa search_menu; para opciones usa get_item_options.
+- Para conocer el menú completo llama search_menu con query vacío; no busques literalmente la palabra "menú".
+- Para buscar un producto concreto usa search_menu y después get_item_options para confirmar precio y disponibilidad.
 - Mantén el pedido únicamente mediante add_to_cart y remove_item.
 - Si falta información, dilo claramente y ofrece transfer_to_human.
 - Si el negocio está cerrado, usa el mensaje fuera de horario como base.
-- Antes de cotizar pregunta el nombre del cliente, si recogerá o requiere entrega y el método de pago.
+- Haz una sola pregunta a la vez y espera la respuesta; no juntes nombre, tipo de pedido, dirección y pago en una sola pregunta.
+- Primero toma los productos y cantidades; al terminar pregunta el nombre, después si recogerá o requiere entrega y después el método de pago.
+- Antes de cotizar debes tener las tres respuestas anteriores.
 - Si requiere entrega, pide la dirección completa (calle, número, colonia, ciudad y referencias), repítela y confirma que es correcta. Nunca cotices una entrega sin dirección.
 - Antes de confirmar un pedido llama quote_order, repite productos, cantidades, total, tipo de entrega y pago, y pide un sí explícito.
 - Llama submit_order únicamente después de ese sí explícito, usando el token de la cotización vigente y confirmed=true.

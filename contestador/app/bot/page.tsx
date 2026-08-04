@@ -15,6 +15,7 @@ import {
   getBotConfig,
   getBusinessSettings,
   getCurrentBusiness,
+  getVoicePreview,
   getVoiceRuntime,
   updateBotConfig,
   updateBusinessSettings,
@@ -22,7 +23,18 @@ import {
 } from "@/lib/api"
 import type { VoiceRuntimeStatus } from "@/lib/api"
 import type { BotConfig } from "@/lib/types"
-import { Bot, CheckCircle2, MessageSquare, Save, Settings2, ShieldCheck } from "lucide-react"
+import { Bot, CheckCircle2, MessageSquare, Play, Save, Settings2, ShieldCheck } from "lucide-react"
+
+const voiceOptions = [
+  ["Zephyr", "Brillante"], ["Puck", "Animada"], ["Charon", "Informativa"], ["Kore", "Firme"],
+  ["Fenrir", "Entusiasta"], ["Leda", "Joven"], ["Orus", "Firme"], ["Aoede", "Aireada"],
+  ["Callirrhoe", "Relajada"], ["Autonoe", "Brillante"], ["Enceladus", "Aireada"], ["Iapetus", "Clara"],
+  ["Umbriel", "Relajada"], ["Algieba", "Suave"], ["Despina", "Suave"], ["Erinome", "Clara"],
+  ["Algenib", "Grave"], ["Rasalgethi", "Informativa"], ["Laomedeia", "Animada"], ["Achernar", "Suave"],
+  ["Alnilam", "Firme"], ["Schedar", "Grave"], ["Gacrux", "Madura"], ["Pulcherrima", "Adulta"],
+  ["Achird", "Amigable"], ["Zubenelgenubi", "Casual"], ["Vindemiatrix", "Amigable"], ["Sadachbia", "Animada"],
+  ["Sadaltager", "Conocedora"], ["Sulafat", "Cálida"],
+] as const
 
 const defaultConfig: BotConfig = {
   welcomeMessage: "",
@@ -39,11 +51,13 @@ const defaultConfig: BotConfig = {
 export default function BotConfigPage() {
   const [config, setConfig] = useState<BotConfig>(defaultConfig)
   const [voiceEnabled, setVoiceEnabled] = useState(true)
+  const [voiceName, setVoiceName] = useState("Iapetus")
   const [twilioNumber, setTwilioNumber] = useState("")
   const [transferNumber, setTransferNumber] = useState("")
   const [runtime, setRuntime] = useState<VoiceRuntimeStatus | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
+  const [isPreviewing, setIsPreviewing] = useState(false)
   const [errorMessage, setErrorMessage] = useState("")
   const [successMessage, setSuccessMessage] = useState("")
 
@@ -60,6 +74,7 @@ export default function BotConfigPage() {
         setConfig(botConfig)
         setRuntime(voiceRuntime)
         setVoiceEnabled(settings.voice_enabled)
+        setVoiceName(settings.voice_name || voiceRuntime.gemini.voice_name || "Iapetus")
         setTwilioNumber(business.twilio_phone_number ?? "")
         setTransferNumber(business.human_transfer_number ?? "")
       } catch (error) {
@@ -77,7 +92,7 @@ export default function BotConfigPage() {
       setErrorMessage("")
       const [updated] = await Promise.all([
         updateBotConfig({ ...config, confirmationRequired: true }),
-        updateBusinessSettings({ voice_enabled: voiceEnabled }),
+        updateBusinessSettings({ voice_enabled: voiceEnabled, voice_name: voiceName }),
         updateCurrentBusiness({
           twilio_phone_number: twilioNumber.trim() || null,
           human_transfer_number: transferNumber.trim() || null,
@@ -90,6 +105,23 @@ export default function BotConfigPage() {
       setErrorMessage(error instanceof Error ? error.message : "No se pudo guardar el asistente.")
     } finally {
       setIsSaving(false)
+    }
+  }
+
+  async function previewVoice() {
+    try {
+      setIsPreviewing(true)
+      setErrorMessage("")
+      const blob = await getVoicePreview(voiceName)
+      const url = URL.createObjectURL(blob)
+      const audio = new Audio(url)
+      audio.onended = () => URL.revokeObjectURL(url)
+      audio.onerror = () => URL.revokeObjectURL(url)
+      await audio.play()
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "No se pudo reproducir el preview.")
+    } finally {
+      setIsPreviewing(false)
     }
   }
 
@@ -141,6 +173,22 @@ export default function BotConfigPage() {
             <Card>
               <CardHeader><CardTitle className="flex items-center gap-2 text-base"><MessageSquare className="h-5 w-5 text-blue-600" />Saludo</CardTitle><CardDescription>Si lo dejas vacío, se usa un saludo automático con el nombre del negocio.</CardDescription></CardHeader>
               <CardContent><Textarea value={config.welcomeMessage} onChange={(event) => setConfig({ ...config, welcomeMessage: event.target.value })} placeholder="Gracias por llamar..." className="min-h-32 rounded-xl" /></CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader><CardTitle className="flex items-center gap-2 text-base"><Play className="h-5 w-5 text-violet-600" />Voz del asistente</CardTitle><CardDescription>Elige una voz de Gemini y escúchala antes de guardarla. Esta voz se usará en las llamadas nuevas.</CardDescription></CardHeader>
+              <CardContent className="space-y-3">
+                <div className="flex flex-col gap-3 sm:flex-row">
+                  <Select value={voiceName} onValueChange={setVoiceName}>
+                    <SelectTrigger className="rounded-xl"><SelectValue /></SelectTrigger>
+                    <SelectContent>{voiceOptions.map(([value, description]) => <SelectItem key={value} value={value}>{value} — {description}</SelectItem>)}</SelectContent>
+                  </Select>
+                  <Button type="button" variant="outline" className="shrink-0 rounded-xl" disabled={isPreviewing} onClick={() => void previewVoice()}>
+                    <Play className="mr-2 h-4 w-4" />{isPreviewing ? "Reproduciendo..." : "Probar voz"}
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">El preview se genera con el mismo motor de voz; la llamada telefónica seguirá teniendo el ancho de banda normal de una línea telefónica.</p>
+              </CardContent>
             </Card>
 
             <Card>

@@ -354,6 +354,7 @@ type BackendBusinessSetting = {
   cash_only_threshold?: string | number | null
   require_prepayment: boolean
   voice_enabled: boolean
+  voice_name: string
   insights_enabled: boolean
   timezone: string
 }
@@ -1217,6 +1218,29 @@ export async function updateBusinessSettings(payload: Partial<BackendBusinessSet
   })
 
   return response.data
+}
+
+export async function getVoicePreview(voiceName: string) {
+  const token = getStoredValue(STORAGE_KEYS.token)
+  if (!token) throw new ApiError("Tu sesión expiró. Vuelve a iniciar sesión.", 401)
+
+  const businessId = getStoredValue(STORAGE_KEYS.businessId) || await resolveBusinessIdFromProfile(token)
+  const response = await fetch(`${API_BASE_URL}/api/v1/voice/preview`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+      "X-Business-Id": businessId,
+    },
+    body: JSON.stringify({ voice_name: voiceName }),
+  })
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null)
+    throw new ApiError(payload?.message || "No se pudo generar el preview de voz.", response.status)
+  }
+
+  return response.blob()
 }
 
 export async function listBusinessHours() {

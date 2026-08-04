@@ -132,6 +132,15 @@ class TwilioGeminiBridge:
                     self.app.logger.warning("Rejected Media Stream with invalid start context")
                     return
 
+                # The webhook has no business context yet, so the bridge starts
+                # with the environment fallback. Once Twilio sends the start
+                # event, switch both adapters to this business's saved voice.
+                self.runtime = VoiceRuntimeConfig.from_app_config(
+                    self.app.config,
+                    business=self.business,
+                )
+                self.twilio.runtime = self.runtime
+
                 self.call_log.provider_stream_sid = self.session.stream_sid
                 self.call_log.session_state = "active"
                 db.session.commit()

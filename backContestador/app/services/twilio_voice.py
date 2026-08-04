@@ -84,7 +84,11 @@ class TwilioVoiceAdapter:
     @staticmethod
     def reject_twiml() -> str:
         response = VoiceResponse()
-        response.reject(reason="busy")
+        response.say(
+            "En este momento no podemos atender la llamada. Por favor intenta de nuevo en un momento.",
+            language="es-MX",
+        )
+        response.hangup()
         return str(response)
 
     @staticmethod

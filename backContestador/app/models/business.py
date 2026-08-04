@@ -85,6 +85,7 @@ class BusinessSetting(TimestampMixin, SerializerMixin, db.Model):
     cash_only_threshold = db.Column(db.Numeric(10, 2), nullable=True)
     require_prepayment = db.Column(db.Boolean, nullable=False, default=False, server_default=db.false())
     voice_enabled = db.Column(db.Boolean, nullable=False, default=True, server_default=db.true())
+    voice_name = db.Column(db.String(32), nullable=False, default="Iapetus", server_default="Iapetus")
     insights_enabled = db.Column(db.Boolean, nullable=False, default=False, server_default=db.false())
     timezone = db.Column(
         db.String(64),

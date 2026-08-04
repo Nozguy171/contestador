@@ -20,6 +20,7 @@ from app.services.promotions import (
     serialize_promotion,
     validate_promotion_payload,
 )
+from app.services.voice_runtime import GEMINI_VOICE_NAMES
 from app.utils.auth import require_auth, require_business
 from app.utils.phone import normalize_phone_number
 from app.utils.responses import error, success
@@ -194,10 +195,13 @@ def upsert_settings():
         "cash_only_threshold",
         "require_prepayment",
         "voice_enabled",
+        "voice_name",
         "insights_enabled",
         "timezone",
     ]:
         if field in data:
+            if field == "voice_name" and data[field] not in GEMINI_VOICE_NAMES:
+                return error("La voz seleccionada no es válida.", 400)
             if field == "timezone":
                 try:
                     ZoneInfo(str(data[field]))
