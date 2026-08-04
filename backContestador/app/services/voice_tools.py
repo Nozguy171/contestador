@@ -75,7 +75,10 @@ VOICE_FUNCTION_DECLARATIONS: list[dict[str, Any]] = [
                 "customer_name": {"type": "string"},
                 "order_type": {"type": "string", "enum": ["pickup", "delivery"]},
                 "payment_method": {"type": "string", "enum": ["cash", "card", "online"]},
-                "delivery_address": {"type": "string"},
+                "delivery_address": {
+                    "type": "string",
+                    "description": "Obligatoria y completa si order_type es delivery; omítela sólo para pickup.",
+                },
                 "notes": {"type": "string"},
             },
             "required": ["customer_name", "order_type", "payment_method"],
@@ -343,6 +346,7 @@ class OrderTools:
             quote=current_quote,
         )
         self.session.state = "order_submitted"
+        self.session.hangup_after_response = True
         self._persist()
         return {
             "ok": True,

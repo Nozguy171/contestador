@@ -24,6 +24,25 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _merge_transcript_chunk(current: str, value: Any) -> str:
+    piece = " ".join(str(value or "").split())
+    if not piece:
+        return current
+    if not current:
+        return piece
+    if piece == current or current.endswith(piece):
+        return current
+    if piece.startswith(current):
+        return piece
+
+    for size in range(min(len(current), len(piece)), 1, -1):
+        if current[-size:].casefold() == piece[:size].casefold():
+            return current + piece[size:]
+
+    separator = "" if piece[0] in ".,!?;:%)]}" or current[-1] in "¿¡([{\"" else " "
+    return f"{current}{separator}{piece}"
+
+
 def get_or_create_call_log(
     *,
     business,
@@ -97,8 +116,8 @@ class TwilioGeminiBridge:
         self.call_log = None
         self._stream_active = True
         self._conversation_lines: list[str] = []
-        self._input_transcript_chunks: list[str] = []
-        self._output_transcript_chunks: list[str] = []
+        self._input_transcript = ""
+        self._output_transcript = ""
         self._assistant_turns: list[str] = []
         self._turn_had_audio = False
         self._mark_counter = 0
@@ -224,6 +243,9 @@ class TwilioGeminiBridge:
                 self.session.pending_marks.discard(mark_name)
                 if not self.session.pending_marks:
                     self.session.response_playing = False
+                    if self.session.hangup_after_response:
+                        await self._hangup_after_response()
+                        break
             elif event_type == "stop":
                 break
 
@@ -237,6 +259,21 @@ class TwilioGeminiBridge:
                 pass
             queue.put_nowait(None)
 
+    async def _hangup_after_response(self) -> None:
+        if not self.session or not self.session.hangup_after_response:
+            return
+        self.session.hangup_after_response = False
+        try:
+            await asyncio.to_thread(
+                self.twilio.hangup_call,
+                call_sid=self.session.call_sid,
+            )
+        except Exception as exc:
+            self._record_error(f"hangup_after_order_error:{type(exc).__name__}")
+            self.app.logger.exception("Could not hang up after order confirmation")
+        finally:
+            self._stream_active = False
+
     async def _send_audio_to_gemini(self, provider, gemini_session, queue) -> None:
         while self._stream_active:
             pcm = await queue.get()
@@ -247,9 +284,9 @@ class TwilioGeminiBridge:
     async def _receive_gemini(self, provider, gemini_session, tools) -> None:
         async for event in provider.events(gemini_session):
             if event.kind == "input_transcript":
-                self._input_transcript_chunks.append(str(event.value))
+                self._input_transcript = _merge_transcript_chunk(self._input_transcript, event.value)
             elif event.kind == "output_transcript":
-                self._output_transcript_chunks.append(str(event.value))
+                self._output_transcript = _merge_transcript_chunk(self._output_transcript, event.value)
             elif event.kind == "audio":
                 self._flush_customer_transcript()
                 audio_data = event.value
@@ -268,10 +305,10 @@ class TwilioGeminiBridge:
                 await self._complete_turn()
 
     async def _handle_interruption(self) -> None:
-        interrupted_text = "".join(self._output_transcript_chunks).strip()
+        interrupted_text = self._output_transcript.strip()
         if interrupted_text:
             self._conversation_lines.append(f"Asistente (interrumpido): {interrupted_text}")
-        self._output_transcript_chunks.clear()
+        self._output_transcript = ""
         self.audio.reset_output()
         self.session.pending_marks.clear()
         self.session.response_playing = False
@@ -284,11 +321,11 @@ class TwilioGeminiBridge:
             await self.twilio.send_media(chunk, self.session.stream_sid)
             self._turn_had_audio = True
 
-        assistant_text = "".join(self._output_transcript_chunks).strip()
+        assistant_text = self._output_transcript.strip()
         if assistant_text:
             self._assistant_turns.append(assistant_text)
             self._conversation_lines.append(f"Asistente: {assistant_text}")
-        self._output_transcript_chunks.clear()
+        self._output_transcript = ""
 
         if self._turn_had_audio:
             self._mark_counter += 1
@@ -298,6 +335,8 @@ class TwilioGeminiBridge:
         self._turn_had_audio = False
         self._persist_conversation_snapshot()
         db.session.commit()
+        if self.session.hangup_after_response and not self.session.pending_marks:
+            await self._hangup_after_response()
 
     async def _handle_tool_call(self, gemini_session, tools, function_calls) -> None:
         from google.genai import types
@@ -326,18 +365,29 @@ class TwilioGeminiBridge:
         await gemini_session.send_tool_response(function_responses=function_responses)
 
     def _flush_customer_transcript(self) -> None:
-        customer_text = "".join(self._input_transcript_chunks).strip()
+        customer_text = self._input_transcript.strip()
         if customer_text:
             self._conversation_lines.append(f"Cliente: {customer_text}")
-        self._input_transcript_chunks.clear()
+        self._input_transcript = ""
+
+    def _build_call_summary(self) -> str | None:
+        if not self._conversation_lines:
+            return None
+        if self.call_log.resulted_in_order:
+            prefix = "Pedido confirmado durante la llamada."
+        elif self.session and self.session.transfer_requested:
+            prefix = "Llamada transferida a una persona."
+        else:
+            prefix = "Llamada atendida sin pedido confirmado."
+        conversation = " ".join(self._conversation_lines)
+        return f"{prefix} {conversation}"[:2000]
 
     def _persist_conversation_snapshot(self) -> None:
         if not self.call_log:
             return
         if self._conversation_lines:
             self.call_log.transcript = "\n".join(self._conversation_lines)
-        if self._assistant_turns:
-            self.call_log.ai_summary = self._assistant_turns[-1]
+        self.call_log.ai_summary = self._build_call_summary()
 
     def _record_error(self, flag: str) -> None:
         if not self.call_log:
@@ -350,7 +400,7 @@ class TwilioGeminiBridge:
         if not self.call_log:
             return
         self._flush_customer_transcript()
-        assistant_text = "".join(self._output_transcript_chunks).strip()
+        assistant_text = self._output_transcript.strip()
         if assistant_text:
             self._assistant_turns.append(assistant_text)
             self._conversation_lines.append(f"Asistente: {assistant_text}")
@@ -373,6 +423,7 @@ class TwilioGeminiBridge:
         linked_order = Order.query.filter_by(call_log_id=self.call_log.id).first()
         if linked_order and self.call_log.transcript:
             linked_order.transcript_preview = self.call_log.transcript[-2000:]
+            linked_order.ai_call_summary = self.call_log.ai_summary
         try:
             db.session.commit()
         except Exception:

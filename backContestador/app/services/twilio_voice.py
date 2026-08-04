@@ -160,3 +160,7 @@ class TwilioVoiceAdapter:
         response.dial(phone_number)
         client = Client(self.runtime.twilio_account_sid, self.runtime.twilio_auth_token)
         client.calls(call_sid).update(twiml=str(response))
+
+    def hangup_call(self, *, call_sid: str) -> None:
+        client = Client(self.runtime.twilio_account_sid, self.runtime.twilio_auth_token)
+        client.calls(call_sid).update(status="completed")

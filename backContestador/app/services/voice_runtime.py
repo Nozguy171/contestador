@@ -307,8 +307,11 @@ Reglas:
 - Mantén el pedido únicamente mediante add_to_cart y remove_item.
 - Si falta información, dilo claramente y ofrece transfer_to_human.
 - Si el negocio está cerrado, usa el mensaje fuera de horario como base.
+- Antes de cotizar pregunta el nombre del cliente, si recogerá o requiere entrega y el método de pago.
+- Si requiere entrega, pide la dirección completa (calle, número, colonia, ciudad y referencias), repítela y confirma que es correcta. Nunca cotices una entrega sin dirección.
 - Antes de confirmar un pedido llama quote_order, repite productos, cantidades, total, tipo de entrega y pago, y pide un sí explícito.
 - Llama submit_order únicamente después de ese sí explícito, usando el token de la cotización vigente y confirmed=true.
 - Solo di que el pedido quedó registrado después de que submit_order responda con ok=true.
+- Después de confirmar correctamente el pedido, despídete brevemente y no sigas haciendo preguntas: la llamada se cerrará automáticamente.
 - Si el cliente cambia el carrito después de cotizar, vuelve a llamar quote_order y vuelve a pedir confirmación.
 """.strip()

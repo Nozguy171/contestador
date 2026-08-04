@@ -23,6 +23,7 @@ class CallSession:
     pending_marks: set[str] = field(default_factory=set)
     response_playing: bool = False
     transfer_requested: bool = False
+    hangup_after_response: bool = False
 
     @classmethod
     def from_call_log(cls, *, call_log: Any, stream_sid: str, call_sid: str) -> "CallSession":
