@@ -31,14 +31,20 @@ def create_app(config_name=None):
 
     @app.errorhandler(404)
     def handle_404(_):
-        return error("Resource not found", 404)
+        return error("No encontramos el recurso solicitado.", 404)
 
     @app.errorhandler(400)
-    def handle_400(_):
-        return error("Bad request", 400)
+    def handle_400(exc):
+        return error(getattr(exc, "description", None) or "La solicitud no es válida.", 400)
+
+    @app.errorhandler(413)
+    def handle_413(_):
+        return error("El archivo es demasiado grande. El límite es 5 MB.", 413)
 
     @app.errorhandler(500)
-    def handle_500(_):
-        return error("Internal server error", 500)
+    def handle_500(exc):
+        db.session.rollback()
+        app.logger.exception("Unhandled API error")
+        return error("Tuvimos un problema interno. Ningún cambio incompleto fue guardado.", 500)
 
     return app

@@ -23,7 +23,9 @@ def get_voice_runtime():
     status = runtime.to_status_payload()
     status["twilio"]["tenant_number_configured"] = bool(g.current_business.twilio_phone_number)
     status["twilio"]["human_transfer_configured"] = bool(g.current_business.human_transfer_number)
-    status["ready"] = status["ready"] and status["twilio"]["tenant_number_configured"]
+    voice_enabled = not g.current_business.settings or g.current_business.settings.voice_enabled
+    status["voice_enabled"] = voice_enabled
+    status["ready"] = status["ready"] and status["twilio"]["tenant_number_configured"] and voice_enabled
     return success(
         {
             "runtime": status,
@@ -48,4 +50,3 @@ def public_twilio_inbound():
 def twilio_status():
     payload, status = update_call_status_from_twilio()
     return success(payload, status=status)
-

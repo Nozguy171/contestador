@@ -121,7 +121,11 @@ class TwilioVoiceAdapter:
         if not token_to or token_to != normalize_phone_number(call_log.to_number):
             return None
         business = self.resolve_business(token_to)
-        if not business or business.id != call_log.business_id:
+        if (
+            not business
+            or business.id != call_log.business_id
+            or (business.settings and not business.settings.voice_enabled)
+        ):
             return None
 
         session = CallSession.from_call_log(

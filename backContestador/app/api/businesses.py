@@ -1,4 +1,5 @@
-from datetime import datetime, time
+from datetime import time
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import Blueprint, g, request
 
@@ -14,6 +15,11 @@ from app.models import (
     FAQ,
 )
 from app.models.enums import BusinessRole
+from app.services.promotions import (
+    PromotionValidationError,
+    serialize_promotion,
+    validate_promotion_payload,
+)
 from app.utils.auth import require_auth, require_business
 from app.utils.phone import normalize_phone_number
 from app.utils.responses import error, success
@@ -187,8 +193,16 @@ def upsert_settings():
         "accept_online",
         "cash_only_threshold",
         "require_prepayment",
+        "voice_enabled",
+        "insights_enabled",
+        "timezone",
     ]:
         if field in data:
+            if field == "timezone":
+                try:
+                    ZoneInfo(str(data[field]))
+                except ZoneInfoNotFoundError:
+                    return error("La zona horaria no es válida.", 400)
             setattr(settings, field, data[field])
 
     db.session.commit()
@@ -261,26 +275,49 @@ def delete_delivery_zone(zone_id):
 @require_business()
 def list_promotions():
     items = BusinessPromotion.query.filter_by(business_id=g.current_business.id).order_by(BusinessPromotion.id.desc()).all()
-    return success([item.to_dict() for item in items])
+    timezone_name = g.current_business.settings.timezone if g.current_business.settings else "UTC"
+    return success([serialize_promotion(item, timezone_name) for item in items])
 
 
 @bp.post("/current/promotions")
 @require_business("manager")
 def create_promotion():
     data = request.get_json(silent=True) or {}
-    text = (data.get("text") or "").strip()
-    if not text:
-        return error("text is required", 400)
-    item = BusinessPromotion(
-        business_id=g.current_business.id,
-        text=text,
-        is_active=data.get("is_active", True),
-        starts_at=datetime.fromisoformat(data["starts_at"]) if data.get("starts_at") else None,
-        ends_at=datetime.fromisoformat(data["ends_at"]) if data.get("ends_at") else None,
-    )
+    try:
+        values = validate_promotion_payload(
+            data,
+            g.current_business.id,
+            g.current_business.settings.timezone if g.current_business.settings else "UTC",
+        )
+    except PromotionValidationError as exc:
+        return error(str(exc), 400)
+    item = BusinessPromotion(business_id=g.current_business.id, **values)
     db.session.add(item)
     db.session.commit()
-    return success(item.to_dict(), "Promotion created", 201)
+    return success(serialize_promotion(item, g.current_business.settings.timezone), "Promotion created", 201)
+
+
+@bp.put("/current/promotions/<int:promotion_id>")
+@require_business("manager")
+def update_promotion(promotion_id):
+    item = BusinessPromotion.query.filter_by(id=promotion_id, business_id=g.current_business.id).first()
+    if not item:
+        return error("Promotion not found", 404)
+    data = request.get_json(silent=True) or {}
+    merged = item.to_dict()
+    merged.update(data)
+    try:
+        values = validate_promotion_payload(
+            merged,
+            g.current_business.id,
+            g.current_business.settings.timezone if g.current_business.settings else "UTC",
+        )
+    except PromotionValidationError as exc:
+        return error(str(exc), 400)
+    for field, value in values.items():
+        setattr(item, field, value)
+    db.session.commit()
+    return success(serialize_promotion(item, g.current_business.settings.timezone), "Promotion updated")
 
 
 @bp.delete("/current/promotions/<int:promotion_id>")

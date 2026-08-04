@@ -1,14 +1,21 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import { toast } from "sonner"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { ProductFormDialog } from "@/components/menu/product-form-dialog"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
-import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -29,10 +36,11 @@ import {
   createCategory,
   createProduct,
   deleteProduct,
+  listInventory,
   listProducts,
   updateProduct,
 } from "@/lib/api"
-import type { Product, Category } from "@/lib/types"
+import type { Product, Category, InventoryItem } from "@/lib/types"
 import {
   Search,
   Plus,
@@ -46,6 +54,7 @@ import {
 export default function MenuPage() {
   const [products, setProducts] = useState<Product[]>([])
   const [categories, setCategories] = useState<Category[]>([])
+  const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([])
   const [searchQuery, setSearchQuery] = useState("")
   const [selectedCategory, setSelectedCategory] = useState<string>("all")
   const [formOpen, setFormOpen] = useState(false)
@@ -59,9 +68,10 @@ export default function MenuPage() {
     try {
       setIsLoading(true)
       setErrorMessage("")
-      const data = await listProducts()
+      const [data, inventory] = await Promise.all([listProducts(), listInventory()])
       setCategories(data.categories)
       setProducts(data.products)
+      setInventoryItems(inventory)
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "No se pudo cargar el menú.")
     } finally {
@@ -95,15 +105,27 @@ export default function MenuPage() {
       price: productData.price || 0,
       isActive: productData.isActive ?? true,
       isSoldOut: productData.isSoldOut ?? false,
+      imageUrl: productData.imageUrl,
+      ingredients: (productData.ingredients ?? []).map((ingredient) => ({
+        inventoryItemId: ingredient.inventoryItemId,
+        quantity: ingredient.quantity,
+      })),
       modifiers: (productData.modifiers ?? [])
         .filter((modifier) => modifier.name.trim())
-        .map((modifier) => ({ name: modifier.name.trim(), price: modifier.price })),
+        .map((modifier) => ({
+          name: modifier.name.trim(),
+          price: modifier.action === "remove" ? 0 : modifier.price,
+          groupName: modifier.groupName.trim() || "Personalización",
+          action: modifier.action,
+        })),
     }
 
     if (editingProduct) {
       await updateProduct(editingProduct.id, payload)
+      toast.success("Producto actualizado.")
     } else {
       await createProduct(payload)
+      toast.success("Producto agregado al menú.")
     }
 
     await loadMenu()
@@ -112,7 +134,8 @@ export default function MenuPage() {
 
   const handleCreateCategory = async (payload: { name: string }) => {
     const category = await createCategory(payload)
-    await loadMenu()
+    setCategories((current) => [...current, category])
+    toast.success("Categoría creada.")
     return category
   }
 
@@ -124,40 +147,32 @@ export default function MenuPage() {
         setProductToDelete(null)
       }
       setDeleteDialogOpen(false)
+      toast.success("Producto eliminado.")
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "No se pudo eliminar el producto.")
+      const message = error instanceof Error ? error.message : "No se pudo eliminar el producto."
+      setErrorMessage(message)
+      toast.error(message)
     }
   }
 
-  const toggleProductActive = async (product: Product) => {
+  const setProductAvailability = async (
+    product: Product,
+    availability: "available" | "sold_out" | "hidden"
+  ) => {
     try {
       await updateProduct(product.id, {
         name: product.name,
         description: product.description,
         categoryId: product.categoryId,
         price: product.price,
-        isActive: !product.isActive,
-        isSoldOut: product.isSoldOut,
+        isActive: availability === "available",
+        isSoldOut: availability === "sold_out",
       })
       await loadMenu()
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "No se pudo actualizar el producto.")
-    }
-  }
-
-  const toggleProductSoldOut = async (product: Product) => {
-    try {
-      await updateProduct(product.id, {
-        name: product.name,
-        description: product.description,
-        categoryId: product.categoryId,
-        price: product.price,
-        isActive: product.isActive,
-        isSoldOut: !product.isSoldOut,
-      })
-      await loadMenu()
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "No se pudo actualizar el producto.")
+      const message = error instanceof Error ? error.message : "No se pudo actualizar el producto."
+      setErrorMessage(message)
+      toast.error(message)
     }
   }
 
@@ -256,20 +271,31 @@ export default function MenuPage() {
                   !product.isActive ? "opacity-60" : ""
                 }`}
               >
+                <div
+                  className="h-28 bg-gradient-to-br from-slate-100 to-slate-200"
+                  style={product.imageUrl ? {
+                    backgroundImage: `linear-gradient(to top,rgba(15,23,42,.35),transparent),url(${product.imageUrl})`,
+                    backgroundPosition: "center",
+                    backgroundSize: "cover",
+                  } : undefined}
+                />
                 <CardContent className="p-5">
                   <div className="flex items-start justify-between gap-4">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <h3 className="font-semibold text-foreground truncate">{product.name}</h3>
-                        {product.isSoldOut && (
+                        {product.isSoldOut ? (
                           <Badge variant="destructive" className="text-xs">
                             <AlertCircle className="mr-1 h-3 w-3" />
                             Agotado
                           </Badge>
-                        )}
-                        {!product.isActive && (
+                        ) : !product.isActive ? (
                           <Badge variant="secondary" className="text-xs">
-                            Inactivo
+                            Oculto
+                          </Badge>
+                        ) : (
+                          <Badge className="border-emerald-200 bg-emerald-50 text-xs text-emerald-700">
+                            Disponible
                           </Badge>
                         )}
                       </div>
@@ -279,7 +305,12 @@ export default function MenuPage() {
                         </Badge>
                         {product.modifiers?.length ? (
                           <Badge variant="secondary" className="text-xs">
-                            {product.modifiers.length} opciones
+                            {product.modifiers.length} personalizaciones
+                          </Badge>
+                        ) : null}
+                        {product.ingredients?.length ? (
+                          <Badge className="border-emerald-200 bg-emerald-50 text-xs text-emerald-700">
+                            {product.ingredients.length} en receta
                           </Badge>
                         ) : null}
                       </div>
@@ -323,22 +354,24 @@ export default function MenuPage() {
                       <span className="text-lg font-semibold text-foreground">
                         ${product.price}
                       </span>
-                      <div className="flex flex-wrap items-center gap-4">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs text-muted-foreground">Agotado</span>
-                          <Switch
-                            checked={product.isSoldOut}
-                            onCheckedChange={() => void toggleProductSoldOut(product)}
-                          />
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs text-muted-foreground">Activo</span>
-                          <Switch
-                            checked={product.isActive}
-                            onCheckedChange={() => void toggleProductActive(product)}
-                          />
-                        </div>
-                      </div>
+                      <Select
+                        value={product.isActive ? "available" : product.isSoldOut ? "sold_out" : "hidden"}
+                        onValueChange={(value) =>
+                          void setProductAvailability(
+                            product,
+                            value as "available" | "sold_out" | "hidden"
+                          )
+                        }
+                      >
+                        <SelectTrigger className="w-full rounded-xl sm:w-[190px]">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="available">Disponible</SelectItem>
+                          <SelectItem value="sold_out">Agotado</SelectItem>
+                          <SelectItem value="hidden">Oculto</SelectItem>
+                        </SelectContent>
+                      </Select>
                     </div>
                   </div>
                 </CardContent>
@@ -356,6 +389,7 @@ export default function MenuPage() {
         }}
         product={editingProduct}
         categories={categories}
+        inventoryItems={inventoryItems}
         onSave={handleSaveProduct}
         onCreateCategory={handleCreateCategory}
       />

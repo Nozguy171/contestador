@@ -12,7 +12,8 @@ from app.models.business import (
 from app.models.call_log import CallLog, CallLogErrorFlag, CallLogToolCall
 from app.models.customer import Customer
 from app.models.faq import FAQ
-from app.models.menu import Category, MenuRule, Product, ProductModifier
+from app.models.inventory import InventoryCategory, InventoryItem, InventoryMovement
+from app.models.menu import Category, MenuRule, Product, ProductIngredient, ProductModifier
 from app.models.order import Order, OrderItem, OrderItemModifier, OrderStatusHistory
 from app.models.user import User
 
@@ -29,10 +30,14 @@ __all__ = [
     "BusinessPromotion",
     "BusinessPolicy",
     "FAQ",
+    "InventoryItem",
+    "InventoryCategory",
+    "InventoryMovement",
     "BotConfig",
     "Category",
     "Product",
     "ProductModifier",
+    "ProductIngredient",
     "MenuRule",
     "Order",
     "OrderItem",

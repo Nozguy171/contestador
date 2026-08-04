@@ -3,9 +3,11 @@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/dashboard/status-badge"
+import { OrderProgress } from "@/components/orders/order-progress"
 import { Separator } from "@/components/ui/separator"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import type { Order, OrderStatus } from "@/lib/types"
+import { getNextOrderStatus, getStatusActionLabel, orderStatusMeta } from "@/lib/order-status"
 import {
   ChevronRight,
   Clock,
@@ -21,16 +23,8 @@ interface OrderDetailDrawerProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onStatusChange: (orderId: string, status: OrderStatus) => void
+  isUpdating?: boolean
 }
-
-const statusFlow: OrderStatus[] = [
-  "new",
-  "confirmed",
-  "preparing",
-  "ready",
-  "out_for_delivery",
-  "delivered",
-]
 
 function formatDateTime(dateString: string) {
   return new Date(dateString).toLocaleString("es-MX", {
@@ -61,26 +55,10 @@ function formatOrderType(type: Order["type"]) {
   return type === "delivery" ? "Entrega a domicilio" : "Recoger en sucursal"
 }
 
-function formatStatusLabel(status: OrderStatus) {
-  return {
-    new: "Nuevo",
-    confirmed: "Confirmado",
-    preparing: "Preparando",
-    ready: "Listo",
-    out_for_delivery: "En camino",
-    delivered: "Entregado",
-    cancelled: "Cancelado",
-  }[status]
-}
-
-export function OrderDetailDrawer({ order, open, onOpenChange, onStatusChange }: OrderDetailDrawerProps) {
+export function OrderDetailDrawer({ order, open, onOpenChange, onStatusChange, isUpdating = false }: OrderDetailDrawerProps) {
   if (!order) return null
 
-  const currentStatusIndex = statusFlow.indexOf(order.status)
-  const nextStatus =
-    order.status !== "cancelled" && currentStatusIndex < statusFlow.length - 1
-      ? statusFlow[currentStatusIndex + 1]
-      : null
+  const nextStatus = getNextOrderStatus(order)
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -100,6 +78,14 @@ export function OrderDetailDrawer({ order, open, onOpenChange, onStatusChange }:
 
         <ScrollArea className="min-h-0 flex-1">
           <div className="space-y-6 p-4 sm:p-6">
+            <div className="space-y-3">
+              <div className="rounded-xl border border-border bg-secondary/30 p-3">
+                <p className="text-sm font-medium">{orderStatusMeta[order.status].label}</p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">{orderStatusMeta[order.status].description}</p>
+              </div>
+              <OrderProgress order={order} />
+            </div>
+
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="flex items-center gap-3 rounded-xl bg-secondary/50 p-3">
                 <Phone className="h-4 w-4 text-muted-foreground" />
@@ -172,6 +158,12 @@ export function OrderDetailDrawer({ order, open, onOpenChange, onStatusChange }:
                     <span className="text-muted-foreground">Subtotal</span>
                     <span>{formatCurrency(order.subtotal)}</span>
                   </div>
+                  {order.discount > 0 ? (
+                    <div className="flex justify-between gap-3 text-sm text-emerald-700">
+                      <span>Promoción{order.promotionName ? ` · ${order.promotionName}` : ""}</span>
+                      <span>-{formatCurrency(order.discount)}</span>
+                    </div>
+                  ) : null}
                   {order.deliveryFee > 0 ? (
                     <div className="flex justify-between text-sm">
                       <span className="text-muted-foreground">Costo de envío</span>
@@ -223,7 +215,7 @@ export function OrderDetailDrawer({ order, open, onOpenChange, onStatusChange }:
             ) : null}
 
             <div>
-              <h4 className="mb-2 text-sm font-medium text-foreground">Historial de estatus</h4>
+              <h4 className="mb-2 text-sm font-medium text-foreground">Historial del pedido</h4>
               <div className="rounded-xl border border-border bg-card p-3">
                 <div className="space-y-3">
                   {order.statusHistory.map((change, index) => (
@@ -254,28 +246,28 @@ export function OrderDetailDrawer({ order, open, onOpenChange, onStatusChange }:
           </div>
         </ScrollArea>
 
-        <div className="shrink-0 border-t border-border bg-card p-4">
+        {order.status !== "cancelled" && order.status !== "delivered" ? <div className="shrink-0 border-t border-border bg-card p-4">
           <div className="flex flex-col gap-2 sm:flex-row">
-            {order.status !== "cancelled" && order.status !== "delivered" ? (
-              <Button
-                variant="outline"
-                className="flex-1 rounded-xl"
-                onClick={() => onStatusChange(order.id, "cancelled")}
-              >
-                Cancelar pedido
-              </Button>
-            ) : null}
+            <Button
+              variant="outline"
+              className="flex-1 rounded-xl"
+              disabled={isUpdating}
+              onClick={() => onStatusChange(order.id, "cancelled")}
+            >
+              Cancelar pedido
+            </Button>
             {nextStatus ? (
               <Button
                 className="flex-1 rounded-xl"
+                disabled={isUpdating}
                 onClick={() => onStatusChange(order.id, nextStatus)}
               >
-                Mover a {formatStatusLabel(nextStatus)}
+                {isUpdating ? "Actualizando..." : getStatusActionLabel(nextStatus)}
                 <ChevronRight className="ml-1 h-4 w-4" />
               </Button>
             ) : null}
           </div>
-        </div>
+        </div> : null}
       </SheetContent>
     </Sheet>
   )

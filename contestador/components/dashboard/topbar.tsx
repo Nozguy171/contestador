@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/sheet"
 import { MobileSidebar } from "./mobile-sidebar"
 import { clearSession, getStoredBusinesses, getStoredUser } from "@/lib/api"
+import { InventoryNotifications } from "./inventory-notifications"
 
 export function Topbar() {
   const router = useRouter()
@@ -86,6 +87,7 @@ export function Topbar() {
       </div>
 
       <div className="flex items-center gap-2">
+        <InventoryNotifications />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" className="gap-2 rounded-xl hover:bg-secondary">

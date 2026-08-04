@@ -144,6 +144,8 @@ class VoiceRuntimeConfig:
 
 
 def build_business_voice_context(business: Any) -> dict[str, Any]:
+    from app.services.promotions import promotion_description, promotion_is_active
+
     settings = business.settings
     bot_config = business.bot_config
 
@@ -167,7 +169,14 @@ def build_business_voice_context(business: Any) -> dict[str, Any]:
         "estimated_delivery_time": business.estimated_delivery_time,
         "hours": hours,
         "delivery_zones": [zone.name for zone in business.delivery_zones if zone.is_active],
-        "promotions": [promotion.text for promotion in business.promotions if promotion.is_active],
+        "promotions": [
+            promotion_description(promotion)
+            for promotion in business.promotions
+            if promotion_is_active(
+                promotion,
+                timezone_name=settings.timezone if settings else "UTC",
+            )
+        ],
         "policies": [policy.text for policy in business.policies if policy.is_active],
         "faqs": [
             {

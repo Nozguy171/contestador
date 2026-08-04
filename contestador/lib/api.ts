@@ -13,6 +13,17 @@ type RequestOptions = RequestInit & {
   businessId?: string | number | null
 }
 
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public status = 0,
+    public details?: unknown
+  ) {
+    super(message)
+    this.name = "ApiError"
+  }
+}
+
 function setStoredBusinessId(businessId: string) {
   if (typeof window === "undefined") return
 
@@ -75,7 +86,9 @@ export async function apiFetch<T = unknown>(
   const { auth = false, businessId, headers, ...rest } = options
 
   const finalHeaders = new Headers(headers || {})
-  finalHeaders.set("Content-Type", "application/json")
+  if (rest.body && !(rest.body instanceof FormData)) {
+    finalHeaders.set("Content-Type", "application/json")
+  }
 
   if (auth && typeof window !== "undefined") {
     const token = getStoredValue(STORAGE_KEYS.token)
@@ -94,10 +107,17 @@ export async function apiFetch<T = unknown>(
     }
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...rest,
-    headers: finalHeaders,
-  })
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      ...rest,
+      headers: finalHeaders,
+    })
+  } catch {
+    throw new ApiError(
+      "No pudimos conectar con el servidor. Revisa tu conexión e inténtalo de nuevo."
+    )
+  }
 
   const data = await response.json().catch(() => null)
 
@@ -108,7 +128,11 @@ export async function apiFetch<T = unknown>(
         window.location.assign("/login")
       }
     }
-    throw new Error(data?.message || "Ocurrió un error inesperado")
+    const message =
+      response.status >= 500
+        ? "El servidor tuvo un problema. Nada se guardó; inténtalo de nuevo."
+        : data?.message || "No pudimos completar la operación."
+    throw new ApiError(message, response.status, data?.details)
   }
 
   return data as T
@@ -180,6 +204,9 @@ type BackendOrder = {
     }>
   }>
   subtotal: string | number
+  discount?: string | number
+  promotion_id?: number | null
+  promotion_name_snapshot?: string | null
   delivery_fee: string | number
   total: string | number
   status:
@@ -208,6 +235,7 @@ type BackendOrder = {
     created_at: string
     changed_by_label?: string | null
   }>
+  source?: "voice" | "pos" | "kiosk"
 }
 
 type BackendCall = {
@@ -239,6 +267,8 @@ type BackendCall = {
     }>
     quote?: {
       subtotal: string | number
+      discount?: string | number
+      promotion_name?: string | null
       delivery_fee: string | number
       total: string | number
       order_type: "pickup" | "delivery"
@@ -281,6 +311,15 @@ type BackendProduct = {
     id: number
     name: string
     price: string | number
+    group_name?: string
+    action?: "choice" | "add" | "remove"
+  }>
+  ingredients?: Array<{
+    id: number
+    inventory_item_id: number
+    inventory_item_name: string
+    unit: string
+    quantity: string | number
   }>
 }
 
@@ -314,6 +353,9 @@ type BackendBusinessSetting = {
   accept_online: boolean
   cash_only_threshold?: string | number | null
   require_prepayment: boolean
+  voice_enabled: boolean
+  insights_enabled: boolean
+  timezone: string
 }
 
 type BackendFAQ = {
@@ -346,8 +388,45 @@ type BackendMenuRule = {
   config: Record<string, unknown>
 }
 
+type BackendInventoryItem = {
+  id: number
+  name: string
+  unit: string
+  quantity: string | number
+  minimum_quantity: string | number
+  cost_per_unit: string | number
+  category_id?: number | null
+  category?: BackendInventoryCategory | null
+  image_url?: string | null
+  low_stock_alert_enabled: boolean
+  is_low_stock: boolean
+  is_active: boolean
+}
+
+type BackendInventoryCategory = {
+  id: number
+  name: string
+  color: string
+  item_count?: number
+}
+
+type BackendInventoryMovement = {
+  id: number
+  inventory_item_id: number
+  item_name: string
+  unit: string
+  movement_type: "initial" | "purchase" | "sale" | "waste" | "correction" | "reversal"
+  quantity_delta: string | number
+  quantity_after: string | number
+  reason?: string | null
+  order_folio?: string | null
+  changed_by_label?: string | null
+  created_at: string
+}
+
 export type VoiceRuntimeStatus = {
   ready: boolean
+  voice_enabled: boolean
   twilio: {
     ready: boolean
     phone_number?: string | null
@@ -388,6 +467,9 @@ function mapOrder(order: BackendOrder) {
       modifiers: item.modifiers?.map((modifier) => modifier.name_snapshot) ?? [],
     })),
     subtotal: toNumber(order.subtotal),
+    discount: toNumber(order.discount),
+    promotionId: order.promotion_id ? String(order.promotion_id) : undefined,
+    promotionName: order.promotion_name_snapshot ?? undefined,
     deliveryFee: toNumber(order.delivery_fee),
     total: toNumber(order.total),
     status: order.status,
@@ -402,6 +484,7 @@ function mapOrder(order: BackendOrder) {
       timestamp: change.created_at,
       by: change.changed_by_label ?? undefined,
     })),
+    source: order.source ?? "voice",
   }
 }
 
@@ -441,6 +524,8 @@ function mapCall(call: BackendCall) {
           quote: call.draft_cart.quote
             ? {
                 subtotal: toNumber(call.draft_cart.quote.subtotal),
+                discount: toNumber(call.draft_cart.quote.discount),
+                promotionName: call.draft_cart.quote.promotion_name ?? undefined,
                 deliveryFee: toNumber(call.draft_cart.quote.delivery_fee),
                 total: toNumber(call.draft_cart.quote.total),
                 orderType: call.draft_cart.quote.order_type,
@@ -479,6 +564,15 @@ function mapProduct(
       id: String(modifier.id),
       name: modifier.name,
       price: toNumber(modifier.price),
+      groupName: modifier.group_name ?? "Personalización",
+      action: modifier.action ?? "choice",
+    })) ?? [],
+    ingredients: product.ingredients?.map((ingredient) => ({
+      id: String(ingredient.id),
+      inventoryItemId: String(ingredient.inventory_item_id),
+      inventoryItemName: ingredient.inventory_item_name,
+      unit: ingredient.unit,
+      quantity: toNumber(ingredient.quantity),
     })) ?? [],
   }
 }
@@ -494,6 +588,30 @@ function mapBotConfig(config: BackendBotConfig) {
     canSuggestAlternatives: config.can_suggest_alternatives,
     tone: config.tone,
     specialInstructions: config.special_instructions ?? "",
+  }
+}
+
+function mapInventoryItem(item: BackendInventoryItem) {
+  return {
+    id: String(item.id),
+    name: item.name,
+    unit: item.unit,
+    quantity: toNumber(item.quantity),
+    minimumQuantity: toNumber(item.minimum_quantity),
+    costPerUnit: toNumber(item.cost_per_unit),
+    categoryId: item.category_id ? String(item.category_id) : undefined,
+    category: item.category
+      ? {
+          id: String(item.category.id),
+          name: item.category.name,
+          color: item.category.color,
+          itemCount: item.category.item_count ?? 0,
+        }
+      : undefined,
+    imageUrl: item.image_url ?? undefined,
+    lowStockAlertEnabled: item.low_stock_alert_enabled,
+    isLowStock: item.is_low_stock,
+    isActive: item.is_active,
   }
 }
 
@@ -619,6 +737,92 @@ export async function listOrders(params?: { status?: string; phoneNumber?: strin
   return response.data.map(mapOrder)
 }
 
+export async function createManualOrder(payload: {
+  customerName?: string
+  phoneNumber?: string
+  type: "pickup" | "delivery"
+  paymentMethod: "cash" | "card" | "online"
+  deliveryAddress?: string
+  notes?: string
+  source?: "pos" | "kiosk"
+  items: Array<{
+    productId: string
+    quantity: number
+    modifierIds: string[]
+    notes?: string
+  }>
+}) {
+  const response = await apiFetch<{ data: BackendOrder }>("/api/v1/orders", {
+    method: "POST",
+    auth: true,
+    body: JSON.stringify({
+      customer_name: payload.customerName,
+      phone_number: payload.phoneNumber,
+      type: payload.type,
+      payment_method: payload.paymentMethod,
+      delivery_address: payload.deliveryAddress,
+      notes: payload.notes,
+      source: payload.source ?? "pos",
+      items: payload.items.map((item) => ({
+        product_id: Number(item.productId),
+        quantity: item.quantity,
+        modifier_ids: item.modifierIds.map(Number),
+        notes: item.notes,
+      })),
+    }),
+  })
+  return mapOrder(response.data)
+}
+
+export async function quoteManualOrder(payload: {
+  customerName?: string
+  type: "pickup" | "delivery"
+  paymentMethod: "cash" | "card" | "online"
+  deliveryAddress?: string
+  notes?: string
+  items: Array<{
+    productId: string
+    quantity: number
+    modifierIds: string[]
+    notes?: string
+  }>
+}) {
+  const response = await apiFetch<{
+    data: {
+      subtotal: string | number
+      discount: string | number
+      promotion_id?: number | null
+      promotion_name?: string | null
+      delivery_fee: string | number
+      total: string | number
+    }
+  }>("/api/v1/orders/quote", {
+    method: "POST",
+    auth: true,
+    body: JSON.stringify({
+      customer_name: payload.customerName,
+      type: payload.type,
+      payment_method: payload.paymentMethod,
+      delivery_address: payload.deliveryAddress,
+      notes: payload.notes,
+      items: payload.items.map((item) => ({
+        product_id: Number(item.productId),
+        quantity: item.quantity,
+        modifier_ids: item.modifierIds.map(Number),
+        notes: item.notes,
+      })),
+    }),
+  })
+  return {
+    subtotal: toNumber(response.data.subtotal),
+    discount: toNumber(response.data.discount),
+    promotionId: response.data.promotion_id ? String(response.data.promotion_id) : undefined,
+    promotionName: response.data.promotion_name ?? undefined,
+    deliveryFee: toNumber(response.data.delivery_fee),
+    total: toNumber(response.data.total),
+  }
+}
+
 export async function listCustomers() {
   const response = await apiFetch<{ data: BackendCustomer[] }>("/api/v1/customers", {
     method: "GET",
@@ -727,7 +931,14 @@ export async function createProduct(payload: {
   price: number
   isActive: boolean
   isSoldOut: boolean
-  modifiers?: Array<{ name: string; price: number }>
+  imageUrl?: string
+  ingredients?: Array<{ inventoryItemId: string; quantity: number }>
+  modifiers?: Array<{
+    name: string
+    price: number
+    groupName: string
+    action: "choice" | "add" | "remove"
+  }>
 }) {
   await apiFetch("/api/v1/menu/products", {
     method: "POST",
@@ -739,7 +950,17 @@ export async function createProduct(payload: {
       price: payload.price,
       is_active: payload.isActive,
       is_sold_out: payload.isSoldOut,
-      modifiers: payload.modifiers,
+      image_url: payload.imageUrl,
+      ingredients: payload.ingredients?.map((ingredient) => ({
+        inventory_item_id: Number(ingredient.inventoryItemId),
+        quantity: ingredient.quantity,
+      })),
+      modifiers: payload.modifiers?.map((modifier) => ({
+        name: modifier.name,
+        price: modifier.price,
+        group_name: modifier.groupName,
+        action: modifier.action,
+      })),
     }),
   })
 }
@@ -751,7 +972,14 @@ export async function updateProduct(productId: string, payload: {
   price: number
   isActive: boolean
   isSoldOut: boolean
-  modifiers?: Array<{ name: string; price: number }>
+  imageUrl?: string
+  ingredients?: Array<{ inventoryItemId: string; quantity: number }>
+  modifiers?: Array<{
+    name: string
+    price: number
+    groupName: string
+    action: "choice" | "add" | "remove"
+  }>
 }) {
   const body = {
     name: payload.name,
@@ -760,7 +988,25 @@ export async function updateProduct(productId: string, payload: {
     price: payload.price,
     is_active: payload.isActive,
     is_sold_out: payload.isSoldOut,
-    ...(payload.modifiers ? { modifiers: payload.modifiers } : {}),
+    image_url: payload.imageUrl,
+    ...(payload.ingredients
+      ? {
+          ingredients: payload.ingredients.map((ingredient) => ({
+            inventory_item_id: Number(ingredient.inventoryItemId),
+            quantity: ingredient.quantity,
+          })),
+        }
+      : {}),
+    ...(payload.modifiers
+      ? {
+          modifiers: payload.modifiers.map((modifier) => ({
+            name: modifier.name,
+            price: modifier.price,
+            group_name: modifier.groupName,
+            action: modifier.action,
+          })),
+        }
+      : {}),
   }
 
   await apiFetch(`/api/v1/menu/products/${productId}`, {
@@ -775,6 +1021,164 @@ export async function deleteProduct(productId: string) {
     method: "DELETE",
     auth: true,
   })
+}
+
+export async function listInventory() {
+  const response = await apiFetch<{ data: BackendInventoryItem[] }>("/api/v1/inventory", {
+    method: "GET",
+    auth: true,
+  })
+  return response.data.map(mapInventoryItem)
+}
+
+export async function createInventoryItem(payload: {
+  name: string
+  unit: string
+  quantity: number
+  minimumQuantity: number
+  costPerUnit: number
+  categoryId?: string
+  imageUrl?: string
+  lowStockAlertEnabled: boolean
+}) {
+  const response = await apiFetch<{ data: BackendInventoryItem }>("/api/v1/inventory", {
+    method: "POST",
+    auth: true,
+    body: JSON.stringify({
+      name: payload.name,
+      unit: payload.unit,
+      quantity: payload.quantity,
+      minimum_quantity: payload.minimumQuantity,
+      cost_per_unit: payload.costPerUnit,
+      category_id: payload.categoryId ? Number(payload.categoryId) : null,
+      image_url: payload.imageUrl,
+      low_stock_alert_enabled: payload.lowStockAlertEnabled,
+    }),
+  })
+  return mapInventoryItem(response.data)
+}
+
+export async function updateInventoryItem(
+  itemId: string,
+  payload: Partial<{
+    name: string
+    unit: string
+    quantity: number
+    minimumQuantity: number
+    costPerUnit: number
+    categoryId?: string
+    imageUrl?: string
+    lowStockAlertEnabled: boolean
+    isActive: boolean
+  }>
+) {
+  const response = await apiFetch<{ data: BackendInventoryItem }>(`/api/v1/inventory/${itemId}`, {
+    method: "PUT",
+    auth: true,
+    body: JSON.stringify({
+      ...(payload.name !== undefined ? { name: payload.name } : {}),
+      ...(payload.unit !== undefined ? { unit: payload.unit } : {}),
+      ...(payload.quantity !== undefined ? { quantity: payload.quantity } : {}),
+      ...(payload.minimumQuantity !== undefined
+        ? { minimum_quantity: payload.minimumQuantity }
+        : {}),
+      ...(payload.costPerUnit !== undefined ? { cost_per_unit: payload.costPerUnit } : {}),
+      ...(payload.categoryId !== undefined
+        ? { category_id: payload.categoryId ? Number(payload.categoryId) : null }
+        : {}),
+      ...(payload.imageUrl !== undefined ? { image_url: payload.imageUrl } : {}),
+      ...(payload.lowStockAlertEnabled !== undefined
+        ? { low_stock_alert_enabled: payload.lowStockAlertEnabled }
+        : {}),
+      ...(payload.isActive !== undefined ? { is_active: payload.isActive } : {}),
+    }),
+  })
+  return mapInventoryItem(response.data)
+}
+
+export async function adjustInventoryItem(
+  itemId: string,
+  payload: {
+    delta: number
+    movementType: "purchase" | "waste" | "correction"
+    reason?: string
+  }
+) {
+  const response = await apiFetch<{ data: BackendInventoryItem }>(
+    `/api/v1/inventory/${itemId}/adjust`,
+    {
+      method: "POST",
+      auth: true,
+      body: JSON.stringify({
+        delta: payload.delta,
+        movement_type: payload.movementType,
+        reason: payload.reason,
+      }),
+    }
+  )
+  return mapInventoryItem(response.data)
+}
+
+export async function listInventoryCategories() {
+  const response = await apiFetch<{ data: BackendInventoryCategory[] }>(
+    "/api/v1/inventory/categories",
+    { method: "GET", auth: true }
+  )
+  return response.data.map((category) => ({
+    id: String(category.id),
+    name: category.name,
+    color: category.color,
+    itemCount: category.item_count ?? 0,
+  }))
+}
+
+export async function createInventoryCategory(payload: { name: string; color: string }) {
+  const response = await apiFetch<{ data: BackendInventoryCategory }>(
+    "/api/v1/inventory/categories",
+    {
+      method: "POST",
+      auth: true,
+      body: JSON.stringify(payload),
+    }
+  )
+  return {
+    id: String(response.data.id),
+    name: response.data.name,
+    color: response.data.color,
+    itemCount: 0,
+  }
+}
+
+export async function listInventoryMovements(itemId?: string) {
+  const suffix = itemId ? `?item_id=${encodeURIComponent(itemId)}` : ""
+  const response = await apiFetch<{ data: BackendInventoryMovement[] }>(
+    `/api/v1/inventory/movements${suffix}`,
+    { method: "GET", auth: true }
+  )
+  return response.data.map((movement) => ({
+    id: String(movement.id),
+    inventoryItemId: String(movement.inventory_item_id),
+    itemName: movement.item_name,
+    unit: movement.unit,
+    movementType: movement.movement_type,
+    quantityDelta: toNumber(movement.quantity_delta),
+    quantityAfter: toNumber(movement.quantity_after),
+    reason: movement.reason ?? undefined,
+    orderFolio: movement.order_folio ?? undefined,
+    changedByLabel: movement.changed_by_label ?? undefined,
+    createdAt: movement.created_at,
+  }))
+}
+
+export async function uploadImage(file: File) {
+  const formData = new FormData()
+  formData.append("image", file)
+  const response = await apiFetch<{ data: { url: string } }>("/api/v1/uploads/images", {
+    method: "POST",
+    auth: true,
+    body: formData,
+  })
+  return response.data.url
 }
 
 export async function getCurrentBusiness() {
@@ -859,7 +1263,7 @@ export async function deleteDeliveryZone(zoneId: string | number) {
 }
 
 export async function listPromotions() {
-  const response = await apiFetch<{ data: Array<{ id: number; text: string }> }>("/api/v1/businesses/current/promotions", {
+  const response = await apiFetch<{ data: import("./types").Promotion[] }>("/api/v1/businesses/current/promotions", {
     method: "GET",
     auth: true,
   })
@@ -867,13 +1271,25 @@ export async function listPromotions() {
   return response.data
 }
 
-export async function createPromotion(text: string) {
-  const response = await apiFetch<{ data: { id: number; text: string } }>("/api/v1/businesses/current/promotions", {
+export async function createPromotion(payload: Omit<import("./types").Promotion, "id" | "status" | "customer_description">) {
+  const response = await apiFetch<{ data: import("./types").Promotion }>("/api/v1/businesses/current/promotions", {
     method: "POST",
     auth: true,
-    body: JSON.stringify({ text }),
+    body: JSON.stringify(payload),
   })
 
+  return response.data
+}
+
+export async function updatePromotion(
+  promotionId: string | number,
+  payload: Partial<Omit<import("./types").Promotion, "id" | "status" | "customer_description">>
+) {
+  const response = await apiFetch<{ data: import("./types").Promotion }>(`/api/v1/businesses/current/promotions/${promotionId}`, {
+    method: "PUT",
+    auth: true,
+    body: JSON.stringify(payload),
+  })
   return response.data
 }
 
@@ -882,6 +1298,14 @@ export async function deletePromotion(promotionId: string | number) {
     method: "DELETE",
     auth: true,
   })
+}
+
+export async function getBusinessInsights() {
+  const response = await apiFetch<{ data: import("./types").BusinessInsights }>("/api/v1/insights", {
+    method: "GET",
+    auth: true,
+  })
+  return response.data
 }
 
 export async function listPolicies() {

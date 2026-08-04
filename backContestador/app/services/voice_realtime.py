@@ -397,6 +397,7 @@ def inbound_twilio_call() -> Response:
     business = adapter.resolve_business(form_data.get("To"))
     if (
         not business
+        or (business.settings and not business.settings.voice_enabled)
         or not runtime.twilio_ready
         or not runtime.gemini_ready
         or not runtime.twilio_stream_url.startswith("wss://")

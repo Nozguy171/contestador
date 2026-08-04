@@ -5,10 +5,52 @@ from app.extensions import db
 from app.models import Order, OrderItem, OrderItemModifier, OrderStatusHistory, Product
 from app.models.enums import ChangedByType, OrderStatus, OrderType, PaymentMethod
 from app.services.customers import get_or_create_customer
+from app.services.promotions import calculate_best_promotion
 
 
 class OrderValidationError(ValueError):
     pass
+
+
+ORDER_STATUS_FLOWS = {
+    OrderType.PICKUP: [
+        OrderStatus.NEW,
+        OrderStatus.CONFIRMED,
+        OrderStatus.PREPARING,
+        OrderStatus.READY,
+        OrderStatus.DELIVERED,
+    ],
+    OrderType.DELIVERY: [
+        OrderStatus.NEW,
+        OrderStatus.CONFIRMED,
+        OrderStatus.PREPARING,
+        OrderStatus.READY,
+        OrderStatus.OUT_FOR_DELIVERY,
+        OrderStatus.DELIVERED,
+    ],
+}
+
+
+def validate_order_status_transition(order, next_status):
+    next_status = OrderStatus(next_status) if isinstance(next_status, str) else next_status
+    if order.status in {OrderStatus.DELIVERED, OrderStatus.CANCELLED}:
+        raise OrderValidationError("Un pedido finalizado ya no puede cambiar de estado.")
+    if next_status == OrderStatus.CANCELLED:
+        return next_status
+    flow = ORDER_STATUS_FLOWS[order.type]
+    if order.status not in flow:
+        raise OrderValidationError("El pedido tiene un estado incompatible con su tipo.")
+    expected = flow[flow.index(order.status) + 1]
+    if next_status != expected:
+        labels = {
+            OrderStatus.CONFIRMED: "confirmado",
+            OrderStatus.PREPARING: "en preparación",
+            OrderStatus.READY: "listo",
+            OrderStatus.OUT_FOR_DELIVERY: "en camino",
+            OrderStatus.DELIVERED: "entregado",
+        }
+        raise OrderValidationError(f"El siguiente estado permitido es {labels[expected]}.")
+    return next_status
 
 
 def serialize_order(order):
@@ -144,11 +186,28 @@ def quote_voice_order(*, business, cart, checkout):
         }
         if len(modifier_map) != len(modifier_ids):
             raise OrderValidationError(f"Hay modificadores inválidos para {product.name}.")
+        choice_groups = set()
+        for modifier in modifier_map.values():
+            if modifier.action != "choice":
+                continue
+            if modifier.group_name in choice_groups:
+                raise OrderValidationError(
+                    f"Sólo puedes elegir una opción de {modifier.group_name} para {product.name}."
+                )
+            choice_groups.add(modifier.group_name)
 
         modifiers = [
             {
                 "id": modifier.id,
-                "name": modifier.name,
+                "name": (
+                    f"Sin {modifier.name}"
+                    if modifier.action == "remove"
+                    else f"Agregar {modifier.name}"
+                    if modifier.action == "add"
+                    else modifier.name
+                ),
+                "group": modifier.group_name,
+                "action": modifier.action,
                 "price": f"{modifier.price:.2f}",
             }
             for modifier in sorted(modifier_map.values(), key=lambda item: (item.sort_order, item.id))
@@ -160,6 +219,7 @@ def quote_voice_order(*, business, cart, checkout):
             {
                 "line_id": str(raw_item.get("line_id") or product.id),
                 "product_id": product.id,
+                "category_id": product.category_id,
                 "name": product.name,
                 "quantity": quantity,
                 "unit_price": f"{product.price:.2f}",
@@ -191,6 +251,9 @@ def quote_voice_order(*, business, cart, checkout):
     ):
         delivery_fee = Decimal("0.00")
 
+    promotion, discount = calculate_best_promotion(business, quote_items)
+    total = max(Decimal("0.00"), subtotal - discount) + delivery_fee
+
     return {
         "items": quote_items,
         "customer_name": customer_name,
@@ -199,8 +262,11 @@ def quote_voice_order(*, business, cart, checkout):
         "delivery_address": delivery_address,
         "notes": notes,
         "subtotal": f"{subtotal:.2f}",
+        "discount": f"{discount:.2f}",
+        "promotion_id": promotion.id if promotion else None,
+        "promotion_name": promotion.name if promotion else None,
         "delivery_fee": f"{delivery_fee:.2f}",
-        "total": f"{subtotal + delivery_fee:.2f}",
+        "total": f"{total:.2f}",
     }
 
 
@@ -209,28 +275,61 @@ def submit_voice_order(*, business, call_log, caller_phone, quote):
     if existing:
         return existing, True
 
+    order = create_order_from_quote(
+        business=business,
+        quote=quote,
+        phone_number=caller_phone or call_log.phone_number,
+        source="voice",
+        call_log=call_log,
+        changed_by_type=ChangedByType.BOT,
+        changed_by_label="Gemini Live",
+        ai_call_summary="Pedido confirmado por Gemini Live durante la llamada.",
+        transcript_preview=(call_log.transcript or "")[-2000:] or None,
+    )
+    call_log.resulted_in_order = True
+    return order, False
+
+
+def create_order_from_quote(
+    *,
+    business,
+    quote,
+    phone_number,
+    source,
+    call_log=None,
+    changed_by_type=ChangedByType.USER,
+    changed_by_user_id=None,
+    changed_by_label=None,
+    ai_call_summary=None,
+    transcript_preview=None,
+):
     order = Order(
         business_id=business.id,
-        call_log_id=call_log.id,
+        call_log_id=call_log.id if call_log else None,
         folio=generate_folio(),
         customer_name=quote["customer_name"],
-        phone_number=caller_phone or call_log.phone_number,
+        phone_number=phone_number,
         type=OrderType(quote["order_type"]),
         status=OrderStatus.NEW,
         subtotal=_to_decimal(quote["subtotal"]),
+        discount=_to_decimal(quote.get("discount")),
+        promotion_id=quote.get("promotion_id"),
+        promotion_name_snapshot=quote.get("promotion_name"),
         delivery_fee=_to_decimal(quote["delivery_fee"]),
         total=_to_decimal(quote["total"]),
         delivery_address=quote.get("delivery_address"),
         notes=quote.get("notes"),
         payment_method=PaymentMethod(quote["payment_method"]),
-        ai_call_summary="Pedido confirmado por Gemini Live durante la llamada.",
-        transcript_preview=(call_log.transcript or "")[-2000:] or None,
+        ai_call_summary=ai_call_summary,
+        transcript_preview=transcript_preview,
+        source=source,
     )
-    order.customer = get_or_create_customer(
-        business_id=business.id,
-        phone_number=order.phone_number,
-        name=order.customer_name,
-    )
+    if phone_number != "MOSTRADOR":
+        order.customer = get_or_create_customer(
+            business_id=business.id,
+            phone_number=order.phone_number,
+            name=order.customer_name,
+        )
     build_order_items(
         order,
         [
@@ -255,12 +354,12 @@ def submit_voice_order(*, business, call_log, caller_phone, quote):
     append_status_history(
         order,
         OrderStatus.NEW,
-        changed_by_type=ChangedByType.BOT,
-        changed_by_label="Gemini Live",
+        changed_by_type=changed_by_type,
+        changed_by_user_id=changed_by_user_id,
+        changed_by_label=changed_by_label,
     )
     db.session.add(order)
     db.session.flush()
     if order.customer:
         order.customer.last_order_at = order.created_at
-    call_log.resulted_in_order = True
-    return order, False
+    return order

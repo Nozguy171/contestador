@@ -9,23 +9,27 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { listOrders, updateOrderStatus } from "@/lib/api"
+import { getNextOrderStatus, getStatusActionLabel, orderStatusMeta } from "@/lib/order-status"
 import type { Order, OrderStatus } from "@/lib/types"
+import { toast } from "sonner"
 import {
   Search,
-  Filter,
   MapPin,
   Package,
   Phone,
@@ -35,22 +39,13 @@ import {
 
 const statusOptions: { value: OrderStatus | "all"; label: string }[] = [
   { value: "all", label: "Todos" },
-  { value: "new", label: "Nuevos" },
+  { value: "new", label: "Por confirmar" },
   { value: "confirmed", label: "Confirmados" },
   { value: "preparing", label: "En preparación" },
   { value: "ready", label: "Listos para recoger" },
-  { value: "out_for_delivery", label: "En camino" },
+  { value: "out_for_delivery", label: "En reparto" },
   { value: "delivered", label: "Entregados" },
   { value: "cancelled", label: "Cancelados" },
-]
-
-const statusFlow: OrderStatus[] = [
-  "new",
-  "confirmed",
-  "preparing",
-  "ready",
-  "out_for_delivery",
-  "delivered",
 ]
 
 function formatTime(dateString: string) {
@@ -67,16 +62,12 @@ function formatDate(dateString: string) {
   })
 }
 
-function formatStatus(status: OrderStatus) {
-  return {
-    new: "nuevo",
-    confirmed: "confirmado",
-    preparing: "preparación",
-    ready: "listo",
-    out_for_delivery: "en camino",
-    delivered: "entregado",
-    cancelled: "cancelado",
-  }[status]
+function formatCurrency(amount: number) {
+  return new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" }).format(amount)
+}
+
+function sourceLabel(source: Order["source"]) {
+  return source === "voice" ? "Llamada" : source === "kiosk" ? "Autoservicio" : "POS"
 }
 
 export default function OrdersPage() {
@@ -87,6 +78,8 @@ export default function OrdersPage() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState("")
+  const [updatingId, setUpdatingId] = useState<string | null>(null)
+  const [cancelOrder, setCancelOrder] = useState<Order | null>(null)
 
   useEffect(() => {
     async function loadOrders() {
@@ -129,6 +122,8 @@ export default function OrdersPage() {
 
   const handleStatusChange = async (orderId: string, newStatus: OrderStatus) => {
     try {
+      setUpdatingId(orderId)
+      setErrorMessage("")
       const updatedOrder = await updateOrderStatus(orderId, newStatus)
       setOrders((prev) =>
         prev.map((order) => (order.id === orderId ? updatedOrder : order))
@@ -137,17 +132,22 @@ export default function OrdersPage() {
       if (selectedOrder?.id === orderId) {
         setSelectedOrder(updatedOrder)
       }
+      toast.success(`${updatedOrder.folio}: ${orderStatusMeta[newStatus].label}`)
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "No se pudo actualizar la orden.")
+      const message = error instanceof Error ? error.message : "No se pudo actualizar el pedido."
+      setErrorMessage(message)
+      toast.error(message)
+    } finally {
+      setUpdatingId(null)
     }
   }
 
-  const getNextStatus = (currentStatus: OrderStatus): OrderStatus | null => {
-    const currentIndex = statusFlow.indexOf(currentStatus)
-    if (currentStatus === "cancelled" || currentIndex === statusFlow.length - 1) {
-      return null
+  const requestStatusChange = (order: Order, newStatus: OrderStatus) => {
+    if (newStatus === "cancelled") {
+      setCancelOrder(order)
+      return
     }
-    return statusFlow[currentIndex + 1]
+    void handleStatusChange(order.id, newStatus)
   }
 
   return (
@@ -155,15 +155,15 @@ export default function OrdersPage() {
       <div className="space-y-6">
         {/* Header */}
         <div className="flex flex-col gap-1">
-          <h1 className="text-2xl font-semibold tracking-tight text-foreground">Pedidos por llamada</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">Pedidos</h1>
           <p className="text-sm text-muted-foreground">
-            Administra los pedidos creados desde llamadas atendidas por IA.
+            Administra en un solo lugar los pedidos de llamadas, POS y autoservicio.
           </p>
         </div>
 
         {/* Filters */}
-        <div className="flex flex-col sm:flex-row gap-4">
-          <div className="relative flex-1 max-w-md">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="relative w-full max-w-md">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               placeholder="Buscar por folio, teléfono o nombre..."
@@ -172,36 +172,17 @@ export default function OrdersPage() {
               className="pl-9 rounded-xl"
             />
           </div>
-          <div className="flex w-full gap-2 sm:w-auto">
-            <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as OrderStatus | "all")}>
-              <SelectTrigger className="w-full rounded-xl sm:w-[180px]">
-                <Filter className="h-4 w-4 mr-2 text-muted-foreground" />
-                <SelectValue placeholder="Filtrar por estatus" />
-              </SelectTrigger>
-              <SelectContent className="rounded-xl">
-                {statusOptions.map((option) => (
-                  <SelectItem key={option.value} value={option.value} className="rounded-lg">
-                    <div className="flex items-center justify-between w-full">
-                      <span>{option.label}</span>
-                      <Badge variant="secondary" className="ml-2 text-xs">
-                        {statusCounts[option.value] || 0}
-                      </Badge>
-                    </div>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          <p className="text-sm text-muted-foreground">Mostrando <span className="font-semibold text-foreground">{filteredOrders.length}</span> de {orders.length}</p>
         </div>
 
         {/* Status Quick Filters */}
-        <div className="flex gap-2 overflow-x-auto pb-2">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 2xl:grid-cols-8">
           {statusOptions.map((option) => (
             <Button
               key={option.value}
               variant={statusFilter === option.value ? "default" : "outline"}
               size="sm"
-              className="rounded-xl shrink-0"
+              className="min-w-0 rounded-xl px-2 text-xs"
               onClick={() => setStatusFilter(option.value)}
             >
               {option.label}
@@ -234,15 +215,15 @@ export default function OrdersPage() {
             <Card className="border-border">
               <CardContent className="flex flex-col items-center justify-center py-12">
                 <Package className="h-12 w-12 text-muted-foreground/50 mb-4" />
-                <p className="text-muted-foreground text-sm">No se encontraron pedidos.</p>
+                <p className="text-sm font-medium text-foreground">{orders.length ? "No hay pedidos que coincidan" : "Todavía no hay pedidos"}</p>
                 <p className="text-muted-foreground/70 text-xs mt-1">
-                  Prueba ajustando los filtros o la búsqueda.
+                  {orders.length ? "Prueba ajustando el filtro o la búsqueda." : "Los pedidos de llamadas, POS y autoservicio aparecerán aquí."}
                 </p>
               </CardContent>
             </Card>
           ) : (
             filteredOrders.map((order) => {
-              const nextStatus = getNextStatus(order.status)
+              const nextStatus = getNextOrderStatus(order)
               
               return (
                 <Card
@@ -273,6 +254,9 @@ export default function OrdersPage() {
                             <Badge variant="outline" className="text-xs">
                               {order.type === "delivery" ? "Entrega" : "Recoger"}
                             </Badge>
+                            <Badge variant={order.source === "voice" ? "default" : "secondary"} className="text-xs">
+                              {sourceLabel(order.source)}
+                            </Badge>
                           </div>
                           <div className="mt-2 flex flex-col gap-1 text-sm text-muted-foreground sm:flex-row sm:items-center sm:gap-4">
                             <span className="min-w-0 truncate">{order.customerName}</span>
@@ -294,7 +278,7 @@ export default function OrdersPage() {
                       {/* Total & Time */}
                       <div className="border-t border-border pt-3 lg:border-0 lg:pt-0">
                         <div className="text-left lg:text-right">
-                          <p className="font-semibold text-foreground">${order.total}</p>
+                          <p className="font-semibold text-foreground">{formatCurrency(order.total)}</p>
                           <p className="whitespace-nowrap text-xs text-muted-foreground">
                             {formatDate(order.createdAt)} {formatTime(order.createdAt)}
                           </p>
@@ -306,10 +290,11 @@ export default function OrdersPage() {
                         {nextStatus && (
                           <Button
                             size="sm"
-                            className="rounded-xl hidden sm:flex"
-                            onClick={() => handleStatusChange(order.id, nextStatus)}
+                            className="hidden rounded-xl sm:flex"
+                            disabled={updatingId === order.id}
+                            onClick={() => requestStatusChange(order, nextStatus)}
                           >
-                            Mover a {formatStatus(nextStatus)}
+                            {updatingId === order.id ? "Actualizando..." : getStatusActionLabel(nextStatus)}
                             <ChevronRight className="ml-1 h-4 w-4" />
                           </Button>
                         )}
@@ -333,15 +318,15 @@ export default function OrdersPage() {
                           {nextStatus && (
                               <DropdownMenuItem 
                                 className="rounded-lg sm:hidden"
-                                onClick={() => void handleStatusChange(order.id, nextStatus)}
+                                onClick={() => requestStatusChange(order, nextStatus)}
                               >
-                                Mover a {formatStatus(nextStatus)}
+                                {getStatusActionLabel(nextStatus)}
                               </DropdownMenuItem>
                             )}
                             {order.status !== "cancelled" && order.status !== "delivered" && (
                               <DropdownMenuItem 
                                 className="rounded-lg text-destructive"
-                                onClick={() => void handleStatusChange(order.id, "cancelled")}
+                                onClick={() => requestStatusChange(order, "cancelled")}
                               >
                                 Cancelar pedido
                               </DropdownMenuItem>
@@ -362,8 +347,28 @@ export default function OrdersPage() {
         order={selectedOrder}
         open={drawerOpen}
         onOpenChange={setDrawerOpen}
-        onStatusChange={handleStatusChange}
+        onStatusChange={(orderId, status) => {
+          const order = orders.find((item) => item.id === orderId)
+          if (order) requestStatusChange(order, status)
+        }}
+        isUpdating={updatingId === selectedOrder?.id}
       />
+
+      <AlertDialog open={Boolean(cancelOrder)} onOpenChange={(open) => !open && setCancelOrder(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Cancelar {cancelOrder?.folio}?</AlertDialogTitle>
+            <AlertDialogDescription>El pedido quedará cerrado y, si ya consumió inventario, las existencias se devolverán automáticamente. Esta acción no se puede deshacer.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Conservar pedido</AlertDialogCancel>
+            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => {
+              if (cancelOrder) void handleStatusChange(cancelOrder.id, "cancelled")
+              setCancelOrder(null)
+            }}>Sí, cancelar pedido</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </DashboardLayout>
   )
 }

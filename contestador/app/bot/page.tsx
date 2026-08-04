@@ -2,34 +2,27 @@
 
 import { useEffect, useState } from "react"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import { Slider } from "@/components/ui/slider"
+import { Input } from "@/components/ui/input"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
-import { getBotConfig, getVoiceRuntime, updateBotConfig } from "@/lib/api"
+import {
+  getBotConfig,
+  getBusinessSettings,
+  getCurrentBusiness,
+  getVoiceRuntime,
+  updateBotConfig,
+  updateBusinessSettings,
+  updateCurrentBusiness,
+} from "@/lib/api"
 import type { VoiceRuntimeStatus } from "@/lib/api"
 import type { BotConfig } from "@/lib/types"
-import {
-  AlertTriangle,
-  Bot,
-  Lightbulb,
-  MessageSquare,
-  Moon,
-  RotateCcw,
-  Save,
-  Sparkles,
-  Volume2,
-} from "lucide-react"
+import { Bot, CheckCircle2, MessageSquare, Save, Settings2, ShieldCheck } from "lucide-react"
 
 const defaultConfig: BotConfig = {
   welcomeMessage: "",
@@ -45,40 +38,58 @@ const defaultConfig: BotConfig = {
 
 export default function BotConfigPage() {
   const [config, setConfig] = useState<BotConfig>(defaultConfig)
+  const [voiceEnabled, setVoiceEnabled] = useState(true)
+  const [twilioNumber, setTwilioNumber] = useState("")
+  const [transferNumber, setTransferNumber] = useState("")
   const [runtime, setRuntime] = useState<VoiceRuntimeStatus | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [isSaving, setIsSaving] = useState(false)
   const [errorMessage, setErrorMessage] = useState("")
   const [successMessage, setSuccessMessage] = useState("")
 
   useEffect(() => {
-    async function loadConfig() {
+    async function load() {
       try {
-        setIsLoading(true)
         setErrorMessage("")
-        const [botConfig, voiceRuntime] = await Promise.all([
+        const [botConfig, voiceRuntime, settings, business] = await Promise.all([
           getBotConfig(),
           getVoiceRuntime(),
+          getBusinessSettings(),
+          getCurrentBusiness(),
         ])
         setConfig(botConfig)
         setRuntime(voiceRuntime)
+        setVoiceEnabled(settings.voice_enabled)
+        setTwilioNumber(business.twilio_phone_number ?? "")
+        setTransferNumber(business.human_transfer_number ?? "")
       } catch (error) {
-        setErrorMessage(error instanceof Error ? error.message : "No se pudo cargar la configuración del bot.")
+        setErrorMessage(error instanceof Error ? error.message : "No se pudo cargar el asistente.")
       } finally {
         setIsLoading(false)
       }
     }
-
-    void loadConfig()
+    void load()
   }, [])
 
-  const handleSave = async () => {
+  async function save() {
     try {
-      const updated = await updateBotConfig(config)
+      setIsSaving(true)
+      setErrorMessage("")
+      const [updated] = await Promise.all([
+        updateBotConfig({ ...config, confirmationRequired: true }),
+        updateBusinessSettings({ voice_enabled: voiceEnabled }),
+        updateCurrentBusiness({
+          twilio_phone_number: twilioNumber.trim() || null,
+          human_transfer_number: transferNumber.trim() || null,
+        }),
+      ])
       setConfig(updated)
-      setSuccessMessage("Configuración del bot guardada.")
+      setSuccessMessage("Asistente actualizado.")
       window.setTimeout(() => setSuccessMessage(""), 2500)
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "No se pudo guardar la configuración del bot.")
+      setErrorMessage(error instanceof Error ? error.message : "No se pudo guardar el asistente.")
+    } finally {
+      setIsSaving(false)
     }
   }
 
@@ -87,314 +98,70 @@ export default function BotConfigPage() {
       <div className="space-y-6">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight text-foreground">Configuración del bot</h1>
-            <p className="text-sm text-muted-foreground">
-              Ajusta cómo habla y cómo resuelve pedidos el asistente por voz.
-            </p>
+            <h1 className="text-2xl font-semibold tracking-tight">Asistente de llamadas</h1>
+            <p className="text-sm text-muted-foreground">Actívalo sólo si el negocio contratará atención telefónica.</p>
           </div>
-          <Button className="rounded-xl" onClick={() => void handleSave()}>
-            <Save className="mr-2 h-4 w-4" />
-            Guardar cambios
+          <Button className="rounded-xl" disabled={isLoading || isSaving} onClick={() => void save()}>
+            <Save className="mr-2 h-4 w-4" />{isSaving ? "Guardando..." : "Guardar"}
           </Button>
         </div>
 
-        {errorMessage ? (
-          <Card className="border-red-200 bg-red-50">
-            <CardContent className="py-4 text-sm text-red-700">{errorMessage}</CardContent>
-          </Card>
-        ) : null}
+        {errorMessage ? <Card className="border-red-200 bg-red-50"><CardContent className="py-4 text-sm text-red-700">{errorMessage}</CardContent></Card> : null}
+        {successMessage ? <Card className="border-emerald-200 bg-emerald-50"><CardContent className="flex items-center gap-2 py-4 text-sm text-emerald-700"><CheckCircle2 className="h-4 w-4" />{successMessage}</CardContent></Card> : null}
 
-        {successMessage ? (
-          <Card className="border-emerald-200 bg-emerald-50">
-            <CardContent className="py-4 text-sm text-emerald-700">{successMessage}</CardContent>
-          </Card>
-        ) : null}
+        <Card className={voiceEnabled ? "border-emerald-200" : "border-border"}>
+          <CardContent className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-3">
+              <div className="rounded-xl bg-violet-50 p-2.5"><Bot className="h-5 w-5 text-violet-600" /></div>
+              <div><p className="font-semibold">Módulo de llamadas con IA</p><p className="text-sm text-muted-foreground">Al apagarlo, Twilio rechazará llamadas; POS, cocina e inventario seguirán funcionando.</p></div>
+            </div>
+            <div className="flex shrink-0 items-center gap-3"><Badge variant={voiceEnabled ? "default" : "secondary"}>{voiceEnabled ? "Activo" : "Desactivado"}</Badge><Switch aria-label="Activar asistente de llamadas" checked={voiceEnabled} onCheckedChange={setVoiceEnabled} /></div>
+          </CardContent>
+        </Card>
 
         {runtime ? (
-          <Card className={runtime.ready ? "border-emerald-200 bg-emerald-50/60" : "border-amber-200 bg-amber-50/60"}>
+          <Card className={runtime.ready ? "border-emerald-200 bg-emerald-50/50" : "border-amber-200 bg-amber-50/50"}>
             <CardContent className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-sm font-semibold">
-                  {runtime.ready ? "Telefonía lista para recibir llamadas" : "Falta configurar la telefonía"}
-                </p>
-                <p className="break-all text-xs text-muted-foreground">
-                  {runtime.twilio.inbound_url ?? "Configura PUBLIC_BASE_URL y credenciales en el backend."}
-                </p>
-              </div>
-              <div className="shrink-0 text-xs text-muted-foreground sm:text-right">
-                <p>Audio: Twilio Media Streams ↔ Gemini Live</p>
-                <p>Gemini: {runtime.gemini.model}</p>
-              </div>
+              <div><p className="text-sm font-semibold">{!voiceEnabled ? "Módulo desactivado" : runtime.ready ? "Telefonía lista" : "Configuración incompleta"}</p><p className="break-all text-xs text-muted-foreground">{runtime.twilio.inbound_url ?? "Falta configurar el dominio público."}</p></div>
+              <p className="text-xs text-muted-foreground">Twilio Media Streams ↔ {runtime.gemini.model}</p>
             </CardContent>
           </Card>
         ) : null}
 
-        {isLoading ? (
-          <Card className="border-border">
-            <CardContent className="py-12 text-center text-sm text-muted-foreground">
-              Cargando configuración del bot...
-            </CardContent>
-          </Card>
-        ) : (
-          <>
-            <div className="grid gap-6 lg:grid-cols-2">
-              <Card className="border-border shadow-sm">
-                <CardHeader className="pb-4">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50">
-                      <MessageSquare className="h-5 w-5 text-blue-600" />
-                    </div>
-                    <div>
-                      <CardTitle className="text-base">Mensaje de bienvenida</CardTitle>
-                      <CardDescription className="text-xs">Saludo al contestar llamadas</CardDescription>
-                    </div>
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <Textarea
-                    value={config.welcomeMessage}
-                    onChange={(e) => setConfig({ ...config, welcomeMessage: e.target.value })}
-                    className="min-h-[110px] rounded-xl"
-                    placeholder="Escribe el mensaje de bienvenida..."
-                  />
-                </CardContent>
-              </Card>
-
-              <Card className="border-border shadow-sm">
-                <CardHeader className="pb-4">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-50">
-                      <Moon className="h-5 w-5 text-indigo-600" />
-                    </div>
-                    <div>
-                      <CardTitle className="text-base">Mensaje fuera de horario</CardTitle>
-                      <CardDescription className="text-xs">Se usa cuando el negocio está cerrado</CardDescription>
-                    </div>
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <Textarea
-                    value={config.afterHoursMessage}
-                    onChange={(e) => setConfig({ ...config, afterHoursMessage: e.target.value })}
-                    className="min-h-[110px] rounded-xl"
-                    placeholder="Escribe el mensaje fuera de horario..."
-                  />
-                </CardContent>
-              </Card>
-
-              <Card className="border-border shadow-sm">
-                <CardHeader className="pb-4">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-50">
-                      <AlertTriangle className="h-5 w-5 text-amber-600" />
-                    </div>
-                    <div>
-                      <CardTitle className="text-base">Mensaje de respaldo</CardTitle>
-                      <CardDescription className="text-xs">Cuando el bot no entiende al cliente</CardDescription>
-                    </div>
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <Textarea
-                    value={config.fallbackMessage}
-                    onChange={(e) => setConfig({ ...config, fallbackMessage: e.target.value })}
-                    className="min-h-[110px] rounded-xl"
-                    placeholder="Escribe el mensaje de respaldo..."
-                  />
-                </CardContent>
-              </Card>
-
-              <Card className="border-border shadow-sm">
-                <CardHeader className="pb-4">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-50">
-                      <Sparkles className="h-5 w-5 text-emerald-600" />
-                    </div>
-                    <div>
-                      <CardTitle className="text-base">Instrucciones especiales</CardTitle>
-                      <CardDescription className="text-xs">Reglas extra durante la conversación</CardDescription>
-                    </div>
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <Textarea
-                    value={config.specialInstructions}
-                    onChange={(e) => setConfig({ ...config, specialInstructions: e.target.value })}
-                    className="min-h-[110px] rounded-xl"
-                    placeholder="Escribe instrucciones especiales para el bot..."
-                  />
-                </CardContent>
-              </Card>
-            </div>
-
-            <Card className="border-border shadow-sm">
-              <CardHeader className="pb-4">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-50">
-                    <Bot className="h-5 w-5 text-violet-600" />
-                  </div>
-                  <div>
-                    <CardTitle className="text-base">Comportamiento</CardTitle>
-                    <CardDescription className="text-xs">Cómo toma decisiones el asistente</CardDescription>
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-6">
-                <div className="grid gap-6 md:grid-cols-2">
-                  <div className="flex items-center justify-between gap-4 rounded-xl border border-border p-4">
-                    <div className="min-w-0 space-y-0.5">
-                      <Label className="text-sm font-medium">Confirmación de pedido</Label>
-                      <p className="text-xs text-muted-foreground">
-                        Pide confirmación antes de cerrar el pedido.
-                      </p>
-                    </div>
-                    <Switch
-                      checked={config.confirmationRequired}
-                      onCheckedChange={(checked) =>
-                        setConfig({ ...config, confirmationRequired: checked })
-                      }
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between gap-4 rounded-xl border border-border p-4">
-                    <div className="min-w-0 space-y-0.5">
-                      <Label className="text-sm font-medium">Sugerir alternativas</Label>
-                      <p className="text-xs text-muted-foreground">
-                        Puede sugerir productos parecidos cuando uno no esté disponible.
-                      </p>
-                    </div>
-                    <Switch
-                      checked={config.canSuggestAlternatives}
-                      onCheckedChange={(checked) =>
-                        setConfig({ ...config, canSuggestAlternatives: checked })
-                      }
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div className="space-y-0.5">
-                      <Label className="flex items-center gap-2 text-sm font-medium">
-                        <RotateCcw className="h-4 w-4 text-muted-foreground" />
-                        Intentos de reintento
-                      </Label>
-                      <p className="text-xs text-muted-foreground">
-                        Cuántas veces vuelve a intentar si no entiende al cliente.
-                      </p>
-                    </div>
-                    <span className="text-lg font-semibold">{config.retryCount}</span>
-                  </div>
-                  <Slider
-                    value={[config.retryCount]}
-                    onValueChange={([value]) => setConfig({ ...config, retryCount: value })}
-                    max={5}
-                    min={1}
-                    step={1}
-                    className="w-full"
-                  />
-                </div>
-
-                <div className="space-y-3">
-                  <Label className="flex items-center gap-2 text-sm font-medium">
-                    <Lightbulb className="h-4 w-4 text-muted-foreground" />
-                    Cuando un producto no está disponible
-                  </Label>
-                  <RadioGroup
-                    value={config.unavailableBehavior}
-                    onValueChange={(value) =>
-                      setConfig({
-                        ...config,
-                        unavailableBehavior: value as BotConfig["unavailableBehavior"],
-                      })
-                    }
-                    className="grid gap-3"
-                  >
-                    <div className="flex items-center space-x-3 rounded-xl border border-border p-4">
-                      <RadioGroupItem value="skip" id="skip" />
-                      <div className="flex-1">
-                        <Label htmlFor="skip" className="cursor-pointer text-sm font-medium">
-                          Omitir producto
-                        </Label>
-                        <p className="text-xs text-muted-foreground">
-                          Le avisa al cliente y continúa con el siguiente.
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center space-x-3 rounded-xl border border-border p-4">
-                      <RadioGroupItem value="suggest_alternative" id="suggest" />
-                      <div className="flex-1">
-                        <Label htmlFor="suggest" className="cursor-pointer text-sm font-medium">
-                          Sugerir alternativa
-                        </Label>
-                        <p className="text-xs text-muted-foreground">
-                          Ofrece un producto similar que sí esté disponible.
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center space-x-3 rounded-xl border border-border p-4">
-                      <RadioGroupItem value="ask_customer" id="ask" />
-                      <div className="flex-1">
-                        <Label htmlFor="ask" className="cursor-pointer text-sm font-medium">
-                          Preguntar al cliente
-                        </Label>
-                        <p className="text-xs text-muted-foreground">
-                          Le pregunta qué prefiere en lugar de ese producto.
-                        </p>
-                      </div>
-                    </div>
-                  </RadioGroup>
-                </div>
+        {!isLoading && voiceEnabled ? (
+          <div className="grid items-start gap-6 lg:grid-cols-2">
+            <Card className="lg:col-span-2">
+              <CardHeader><CardTitle className="text-base">Telefonía</CardTitle><CardDescription>Números en formato internacional E.164. Esta sección sólo importa si el módulo está activo.</CardDescription></CardHeader>
+              <CardContent className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2"><Label htmlFor="bot-twilio-number">Número de Twilio</Label><Input id="bot-twilio-number" value={twilioNumber} onChange={(event) => setTwilioNumber(event.target.value)} placeholder="+17179372169" /></div>
+                <div className="space-y-2"><Label htmlFor="bot-transfer-number">Transferir a una persona</Label><Input id="bot-transfer-number" value={transferNumber} onChange={(event) => setTransferNumber(event.target.value)} placeholder="+526649998877" /></div>
               </CardContent>
             </Card>
 
-            <Card className="border-border shadow-sm">
-              <CardHeader className="pb-4">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-rose-50">
-                    <Volume2 className="h-5 w-5 text-rose-600" />
-                  </div>
-                  <div>
-                    <CardTitle className="text-base">Voz y tono</CardTitle>
-                    <CardDescription className="text-xs">Cómo debe sonar el bot</CardDescription>
-                  </div>
-                </div>
-              </CardHeader>
+            <Card>
+              <CardHeader><CardTitle className="flex items-center gap-2 text-base"><MessageSquare className="h-5 w-5 text-blue-600" />Saludo</CardTitle><CardDescription>Si lo dejas vacío, se usa un saludo automático con el nombre del negocio.</CardDescription></CardHeader>
+              <CardContent><Textarea value={config.welcomeMessage} onChange={(event) => setConfig({ ...config, welcomeMessage: event.target.value })} placeholder="Gracias por llamar..." className="min-h-32 rounded-xl" /></CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader><CardTitle className="flex items-center gap-2 text-base"><Bot className="h-5 w-5 text-violet-600" />Estilo de conversación</CardTitle><CardDescription>Un solo ajuste fácil de explicar al cliente.</CardDescription></CardHeader>
               <CardContent className="space-y-4">
-                <div className="space-y-2">
-                  <Label>Tono de conversación</Label>
-                  <Select
-                    value={config.tone}
-                    onValueChange={(value) =>
-                      setConfig({ ...config, tone: value as BotConfig["tone"] })
-                    }
-                  >
-                    <SelectTrigger className="rounded-xl">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent className="rounded-xl">
-                      <SelectItem value="formal" className="rounded-lg">Formal</SelectItem>
-                      <SelectItem value="friendly" className="rounded-lg">Amigable</SelectItem>
-                      <SelectItem value="casual" className="rounded-lg">Casual</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="rounded-xl bg-secondary/50 p-4">
-                  <p className="mb-2 text-xs font-medium text-muted-foreground">Vista previa</p>
-                  <p className="text-sm text-foreground">
-                    {config.tone === "formal" &&
-                      "Buenas tardes. Gracias por llamar. ¿En qué puedo ayudarle con su pedido?"}
-                    {config.tone === "friendly" &&
-                      "Hola, gracias por llamar. ¿Qué te ayudo a pedir hoy?"}
-                    {config.tone === "casual" &&
-                      "¡Qué onda! ¿Qué vas a pedir hoy?"}
-                  </p>
-                </div>
+                <div className="space-y-2"><Label>Tono</Label><Select value={config.tone} onValueChange={(value) => setConfig({ ...config, tone: value as BotConfig["tone"] })}><SelectTrigger className="rounded-xl"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="formal">Formal</SelectItem><SelectItem value="friendly">Amigable</SelectItem><SelectItem value="casual">Casual</SelectItem></SelectContent></Select></div>
+                <p className="rounded-xl bg-secondary/50 p-4 text-sm">{config.tone === "formal" ? "Buenas tardes. ¿En qué puedo ayudarle con su pedido?" : config.tone === "casual" ? "¡Qué onda! ¿Qué vas a pedir hoy?" : "Hola, gracias por llamar. ¿Qué te ayudo a pedir hoy?"}</p>
               </CardContent>
             </Card>
-          </>
-        )}
+
+            <Card className="lg:col-span-2">
+              <CardContent className="p-0">
+                <Accordion type="single" collapsible>
+                  <AccordionItem value="advanced" className="border-0 px-5"><AccordionTrigger className="py-5"><span className="flex items-center gap-2"><Settings2 className="h-5 w-5 text-muted-foreground" />Instrucciones avanzadas (opcional)</span></AccordionTrigger><AccordionContent className="pb-5"><Textarea value={config.specialInstructions} onChange={(event) => setConfig({ ...config, specialInstructions: event.target.value })} placeholder="Ej. No ofrecer salsa extra los domingos." className="min-h-32 rounded-xl" /><p className="mt-2 text-xs text-muted-foreground">Úsalas sólo para excepciones; menú, precios y disponibilidad se configuran en sus propias secciones.</p></AccordionContent></AccordionItem>
+                </Accordion>
+              </CardContent>
+            </Card>
+
+            <Card className="border-blue-200 bg-blue-50/50 lg:col-span-2"><CardContent className="flex items-start gap-3 py-4"><ShieldCheck className="mt-0.5 h-5 w-5 text-blue-600" /><div><p className="text-sm font-semibold">Reglas seguras automáticas</p><p className="text-xs text-muted-foreground">La confirmación del pedido, validación de precios, productos agotados, métodos de pago e idempotencia ya no se presentan como opciones: el backend siempre las aplica.</p></div></CardContent></Card>
+          </div>
+        ) : null}
       </div>
     </DashboardLayout>
   )

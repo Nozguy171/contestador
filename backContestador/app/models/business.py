@@ -1,7 +1,7 @@
 from sqlalchemy import Enum
 
 from app.extensions import db
-from app.models.base import SerializerMixin, TimestampMixin
+from app.models.base import JSON_VARIANT, SerializerMixin, TimestampMixin
 from app.models.enums import BusinessRole
 
 
@@ -31,6 +31,12 @@ class Business(TimestampMixin, SerializerMixin, db.Model):
     orders = db.relationship("Order", back_populates="business", cascade="all, delete-orphan")
     call_logs = db.relationship("CallLog", back_populates="business", cascade="all, delete-orphan")
     customers = db.relationship("Customer", back_populates="business", cascade="all, delete-orphan")
+    inventory_items = db.relationship("InventoryItem", back_populates="business", cascade="all, delete-orphan")
+    inventory_categories = db.relationship(
+        "InventoryCategory",
+        back_populates="business",
+        cascade="all, delete-orphan",
+    )
 
 
 class BusinessUser(db.Model, SerializerMixin):
@@ -78,6 +84,14 @@ class BusinessSetting(TimestampMixin, SerializerMixin, db.Model):
     accept_online = db.Column(db.Boolean, nullable=False, default=True, server_default=db.true())
     cash_only_threshold = db.Column(db.Numeric(10, 2), nullable=True)
     require_prepayment = db.Column(db.Boolean, nullable=False, default=False, server_default=db.false())
+    voice_enabled = db.Column(db.Boolean, nullable=False, default=True, server_default=db.true())
+    insights_enabled = db.Column(db.Boolean, nullable=False, default=False, server_default=db.false())
+    timezone = db.Column(
+        db.String(64),
+        nullable=False,
+        default="America/Mexico_City",
+        server_default="America/Mexico_City",
+    )
 
     business = db.relationship("Business", back_populates="settings")
 
@@ -98,12 +112,41 @@ class BusinessPromotion(TimestampMixin, SerializerMixin, db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     business_id = db.Column(db.Integer, db.ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = db.Column(db.String(160), nullable=False)
     text = db.Column(db.Text, nullable=False)
+    promotion_type = db.Column(db.String(32), nullable=False)
+    value = db.Column(db.Numeric(6, 2), nullable=False, default=0, server_default="0")
+    scope_type = db.Column(db.String(24), nullable=False, default="all", server_default="all")
+    product_id = db.Column(
+        db.Integer,
+        db.ForeignKey("products.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    category_id = db.Column(
+        db.Integer,
+        db.ForeignKey("categories.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    days_of_week = db.Column(JSON_VARIANT, nullable=False, default=list, server_default="[]")
     is_active = db.Column(db.Boolean, nullable=False, default=True, server_default=db.true())
     starts_at = db.Column(db.DateTime(timezone=True), nullable=True)
     ends_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
     business = db.relationship("Business", back_populates="promotions")
+
+    __table_args__ = (
+        db.CheckConstraint(
+            "promotion_type IN ('percentage', 'two_for_one', 'second_half')",
+            name="ck_business_promotions_type",
+        ),
+        db.CheckConstraint(
+            "scope_type IN ('all', 'category', 'product')",
+            name="ck_business_promotions_scope",
+        ),
+        db.CheckConstraint("value >= 0 AND value <= 100", name="ck_business_promotions_value"),
+    )
 
 
 class BusinessPolicy(TimestampMixin, SerializerMixin, db.Model):

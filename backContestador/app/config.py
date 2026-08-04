@@ -8,6 +8,7 @@ class Config:
         "postgresql+psycopg://voice_user:voice_password@db:5432/voice_orders",
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    MAX_CONTENT_LENGTH = 6 * 1024 * 1024
     JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-me-jwt")
     JWT_ACCESS_TOKEN_EXPIRES = 60 * 60 * 12
     CORS_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "*").split(",") if origin.strip()]
@@ -31,6 +32,10 @@ class Config:
     VOICE_END_OF_SPEECH_SENSITIVITY = os.getenv("VOICE_END_OF_SPEECH_SENSITIVITY", "END_SENSITIVITY_LOW")
     VOICE_PREFIX_PADDING_MS = int(os.getenv("VOICE_PREFIX_PADDING_MS", "120"))
     VOICE_SILENCE_DURATION_MS = int(os.getenv("VOICE_SILENCE_DURATION_MS", "700"))
+    UPLOAD_FOLDER = os.getenv(
+        "UPLOAD_FOLDER",
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads"),
+    )
 
 
 class DevelopmentConfig(Config):

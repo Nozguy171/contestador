@@ -84,8 +84,8 @@
 }
 
 @theme inline {
-  --font-sans: 'Geist', 'Geist Fallback';
-  --font-mono: 'Geist Mono', 'Geist Mono Fallback';
+  --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -130,5 +130,16 @@
   }
   body {
     @apply bg-background text-foreground;
+    text-rendering: optimizeLegibility;
+  }
+}
+
+@layer utilities {
+  .page-title {
+    @apply text-2xl font-semibold tracking-tight text-slate-950 sm:text-3xl dark:text-foreground;
+  }
+
+  .page-subtitle {
+    @apply mt-1 max-w-2xl text-sm leading-6 text-muted-foreground;
   }
 }

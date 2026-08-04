@@ -113,6 +113,14 @@ def _money(value: Decimal | str | int | float) -> str:
     return f"{Decimal(str(value)):.2f}"
 
 
+def _modifier_label(modifier) -> str:
+    if modifier.action == "remove":
+        return f"Sin {modifier.name}"
+    if modifier.action == "add":
+        return f"Agregar {modifier.name}"
+    return modifier.name
+
+
 def _product_payload(product: Product) -> dict[str, Any]:
     return {
         "id": product.id,
@@ -122,7 +130,14 @@ def _product_payload(product: Product) -> dict[str, Any]:
         "is_sold_out": product.is_sold_out,
         "category": product.category.name if product.category else None,
         "modifiers": [
-            {"id": item.id, "name": item.name, "price": _money(item.price)}
+            {
+                "id": item.id,
+                "name": item.name,
+                "label": _modifier_label(item),
+                "group": item.group_name,
+                "action": item.action,
+                "price": _money(item.price),
+            }
             for item in sorted(product.modifiers, key=lambda row: (row.sort_order, row.id))
             if item.is_active
         ],
@@ -211,8 +226,23 @@ class OrderTools:
         }
         if len(modifier_map) != len(modifier_ids):
             raise OrderValidationError(f"Hay modificadores inválidos para {product.name}.")
+        choice_groups = set()
+        for item in modifier_map.values():
+            if item.action != "choice":
+                continue
+            if item.group_name in choice_groups:
+                raise OrderValidationError(
+                    f"Sólo puedes elegir una opción de {item.group_name} para {product.name}."
+                )
+            choice_groups.add(item.group_name)
         modifiers = [
-            {"id": item.id, "name": item.name, "price": _money(item.price)}
+            {
+                "id": item.id,
+                "name": _modifier_label(item),
+                "group": item.group_name,
+                "action": item.action,
+                "price": _money(item.price),
+            }
             for item in sorted(modifier_map.values(), key=lambda row: (row.sort_order, row.id))
         ]
         modifier_total = sum((Decimal(item["price"]) for item in modifiers), Decimal("0.00"))

@@ -18,6 +18,14 @@ class Order(TimestampMixin, SerializerMixin, db.Model):
     type = db.Column(Enum(OrderType, native_enum=False), nullable=False)
     status = db.Column(Enum(OrderStatus, native_enum=False), nullable=False, default=OrderStatus.NEW)
     subtotal = db.Column(db.Numeric(10, 2), nullable=False, default=0, server_default="0")
+    discount = db.Column(db.Numeric(10, 2), nullable=False, default=0, server_default="0")
+    promotion_id = db.Column(
+        db.Integer,
+        db.ForeignKey("business_promotions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    promotion_name_snapshot = db.Column(db.String(160), nullable=True)
     delivery_fee = db.Column(db.Numeric(10, 2), nullable=False, default=0, server_default="0")
     total = db.Column(db.Numeric(10, 2), nullable=False, default=0, server_default="0")
     delivery_address = db.Column(db.Text, nullable=True)
@@ -25,6 +33,7 @@ class Order(TimestampMixin, SerializerMixin, db.Model):
     payment_method = db.Column(Enum(PaymentMethod, native_enum=False), nullable=False)
     ai_call_summary = db.Column(db.Text, nullable=True)
     transcript_preview = db.Column(db.Text, nullable=True)
+    source = db.Column(db.String(16), nullable=False, default="voice", server_default="voice")
 
     business = db.relationship("Business", back_populates="orders")
     customer = db.relationship("Customer", back_populates="orders")

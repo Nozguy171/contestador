@@ -12,16 +12,26 @@ import {
   Users,
   Bot,
   FileText,
+  ShoppingCart,
+  ChefHat,
+  Boxes,
+  BrainCircuit,
+  Tags,
 } from "lucide-react"
 
 const navigation = [
   { name: "Inicio", href: "/", icon: LayoutDashboard },
-  { name: "Pedidos por llamada", href: "/orders", icon: Phone },
+  { name: "Punto de venta", href: "/pos", icon: ShoppingCart },
+  { name: "Pantalla de cocina", href: "/kds", icon: ChefHat },
+  { name: "Pedidos", href: "/orders", icon: Phone },
   { name: "Gestión de menú", href: "/menu", icon: UtensilsCrossed },
-  { name: "Reglas del menú", href: "/rules", icon: Settings2 },
+  { name: "Inventario", href: "/inventory", icon: Boxes },
+  { name: "Promociones", href: "/promotions", icon: Tags },
+  { name: "Recomendaciones", href: "/insights", icon: BrainCircuit },
+  { name: "Venta y entrega", href: "/rules", icon: Settings2 },
   { name: "Información del negocio", href: "/business", icon: Building2 },
   { name: "Historial de clientes", href: "/customers", icon: Users },
-  { name: "Configuración del bot", href: "/bot", icon: Bot },
+  { name: "Asistente de llamadas", href: "/bot", icon: Bot },
   { name: "Registro de llamadas", href: "/logs", icon: FileText },
 ]
 

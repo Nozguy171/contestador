@@ -1,36 +1,6 @@
 import { cn } from "@/lib/utils"
 import type { OrderStatus, CallLog } from "@/lib/types"
-
-const statusConfig: Record<OrderStatus, { label: string; className: string }> = {
-  new: {
-    label: "Nuevo",
-    className: "bg-blue-50 text-blue-700 border-blue-200",
-  },
-  confirmed: {
-    label: "Confirmado",
-    className: "bg-cyan-50 text-cyan-700 border-cyan-200",
-  },
-  preparing: {
-    label: "En preparación",
-    className: "bg-amber-50 text-amber-700 border-amber-200",
-  },
-  ready: {
-    label: "Listo",
-    className: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  },
-  out_for_delivery: {
-    label: "En camino",
-    className: "bg-violet-50 text-violet-700 border-violet-200",
-  },
-  delivered: {
-    label: "Entregado",
-    className: "bg-green-50 text-green-700 border-green-200",
-  },
-  cancelled: {
-    label: "Cancelado",
-    className: "bg-red-50 text-red-700 border-red-200",
-  },
-}
+import { orderStatusMeta } from "@/lib/order-status"
 
 const callStatusConfig: Record<CallLog["status"], { label: string; className: string }> = {
   completed: {
@@ -57,7 +27,7 @@ interface StatusBadgeProps {
 }
 
 export function StatusBadge({ status, size = "md" }: StatusBadgeProps) {
-  const config = statusConfig[status]
+  const config = orderStatusMeta[status]
   
   return (
     <span

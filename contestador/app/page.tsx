@@ -185,7 +185,7 @@ export default function DashboardPage() {
         <div className="flex flex-col gap-1">
           <h1 className="text-2xl font-semibold tracking-tight text-foreground">Inicio</h1>
           <p className="text-sm text-muted-foreground">
-            Resumen de tus pedidos por llamada y la actividad reciente.
+            Resumen de pedidos, cocina y actividad de llamadas.
           </p>
         </div>
 

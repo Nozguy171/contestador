@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import Link from "next/link"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -27,18 +28,15 @@ import {
   createDeliveryZone,
   createFaq,
   createPolicy,
-  createPromotion,
   deleteDeliveryZone,
   deleteFaq,
   deletePolicy,
-  deletePromotion,
   getBusinessSettings,
   getCurrentBusiness,
   listBusinessHours,
   listDeliveryZones,
   listFaqs,
   listPolicies,
-  listPromotions,
   replaceBusinessHours,
   updateBusinessSettings,
   updateCurrentBusiness,
@@ -55,7 +53,6 @@ import {
   Phone,
   Plus,
   Save,
-  Tag,
   Trash2,
   Truck,
 } from "lucide-react"
@@ -103,14 +100,12 @@ export default function BusinessPage() {
     deliveryFee: 0,
   })
   const [deliveryZones, setDeliveryZones] = useState<Array<{ id: number; name: string }>>([])
-  const [promotions, setPromotions] = useState<Array<{ id: number; text: string }>>([])
   const [policies, setPolicies] = useState<Array<{ id: number; text: string }>>([])
   const [faqs, setFaqs] = useState<FAQ[]>([])
   const [faqDialogOpen, setFaqDialogOpen] = useState(false)
   const [editingFaq, setEditingFaq] = useState<FAQ | null>(null)
   const [newFaq, setNewFaq] = useState({ question: "", answer: "", category: "General" })
   const [newDeliveryZone, setNewDeliveryZone] = useState("")
-  const [newPromotion, setNewPromotion] = useState("")
   const [newPolicy, setNewPolicy] = useState("")
   const [isLoading, setIsLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState("")
@@ -131,7 +126,6 @@ export default function BusinessPage() {
           settings,
           backendHours,
           zones,
-          backendPromotions,
           backendPolicies,
           backendFaqs,
         ] = await Promise.all([
@@ -139,7 +133,6 @@ export default function BusinessPage() {
           getBusinessSettings(),
           listBusinessHours(),
           listDeliveryZones(),
-          listPromotions(),
           listPolicies(),
           listFaqs(),
         ])
@@ -173,7 +166,6 @@ export default function BusinessPage() {
         )
 
         setDeliveryZones(zones)
-        setPromotions(backendPromotions)
         setPolicies(backendPolicies)
         setFaqs(
           backendFaqs.map((faq) => ({
@@ -261,19 +253,6 @@ export default function BusinessPage() {
       setNewDeliveryZone("")
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "No se pudo agregar la zona de entrega.")
-    }
-  }
-
-  const handleAddPromotion = async () => {
-    const value = newPromotion.trim()
-    if (!value) return
-
-    try {
-      const promotion = await createPromotion(value)
-      setPromotions((current) => [...current, promotion])
-      setNewPromotion("")
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "No se pudo agregar la promoción.")
     }
   }
 
@@ -369,7 +348,7 @@ export default function BusinessPage() {
                     </div>
                     <div>
                       <CardTitle className="text-base">Información general</CardTitle>
-                      <CardDescription className="text-xs">Datos principales del negocio</CardDescription>
+                      <CardDescription className="text-xs">Datos usados por todos los módulos</CardDescription>
                     </div>
                   </div>
                 </CardHeader>
@@ -423,44 +402,6 @@ export default function BusinessPage() {
                         />
                       </div>
                     </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="twilioPhoneNumber">Número de Twilio</Label>
-                    <div className="relative">
-                      <Phone className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                      <Input
-                        id="twilioPhoneNumber"
-                        value={businessInfo.twilioPhoneNumber}
-                        onChange={(e) =>
-                          setBusinessInfo({ ...businessInfo, twilioPhoneNumber: e.target.value })
-                        }
-                        placeholder="+526641234567"
-                        className="rounded-xl pl-9"
-                      />
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      Se usa para enrutar cada llamada al negocio correcto. Escríbelo en formato E.164.
-                    </p>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="humanTransferNumber">Número para atención humana</Label>
-                    <div className="relative">
-                      <Phone className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                      <Input
-                        id="humanTransferNumber"
-                        value={businessInfo.humanTransferNumber}
-                        onChange={(e) =>
-                          setBusinessInfo({ ...businessInfo, humanTransferNumber: e.target.value })
-                        }
-                        placeholder="+526649998877"
-                        className="rounded-xl pl-9"
-                      />
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      Gemini transfiere aquí cuando el cliente pide hablar con una persona. No puede ser el número de Twilio.
-                    </p>
                   </div>
 
                   <Button className="w-full rounded-xl" onClick={() => void handleSaveGeneralInfo()}>
@@ -650,54 +591,15 @@ export default function BusinessPage() {
                 </CardContent>
               </Card>
 
-              <Card className="border-border shadow-sm">
-                <CardHeader className="pb-4">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-50">
-                      <Tag className="h-5 w-5 text-emerald-600" />
-                    </div>
-                    <div>
-                      <CardTitle className="text-base">Promociones</CardTitle>
-                      <CardDescription className="text-xs">Ofertas que el asistente puede mencionar</CardDescription>
-                    </div>
-                  </div>
+              <Card className="border-emerald-200 bg-emerald-50/40 shadow-sm">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">Promociones y descuentos</CardTitle>
+                  <CardDescription>Configura 2x1, porcentajes y segunda unidad al 50% desde su módulo dedicado.</CardDescription>
                 </CardHeader>
-                <CardContent className="space-y-3">
-                  {promotions.map((promotion) => (
-                    <div key={promotion.id} className="flex items-center gap-3 rounded-xl border border-border p-3">
-                      <p className="flex-1 text-sm text-foreground">{promotion.text}</p>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="shrink-0"
-                        onClick={() =>
-                          void deletePromotion(promotion.id)
-                            .then(() => {
-                              setPromotions((current) => current.filter((item) => item.id !== promotion.id))
-                            })
-                            .catch((error: unknown) => {
-                              setErrorMessage(
-                                error instanceof Error ? error.message : "No se pudo eliminar la promoción."
-                              )
-                            })
-                        }
-                      >
-                        <Trash2 className="h-4 w-4 text-muted-foreground" />
-                      </Button>
-                    </div>
-                  ))}
-
-                  <div className="flex gap-2">
-                    <Input
-                      value={newPromotion}
-                      onChange={(e) => setNewPromotion(e.target.value)}
-                      placeholder="Agregar promoción..."
-                      className="rounded-xl"
-                    />
-                    <Button variant="outline" className="rounded-xl" onClick={() => void handleAddPromotion()}>
-                      <Plus className="h-4 w-4" />
-                    </Button>
-                  </div>
+                <CardContent>
+                  <Button asChild variant="outline" className="w-full rounded-xl bg-background">
+                    <Link href="/promotions">Administrar promociones</Link>
+                  </Button>
                 </CardContent>
               </Card>
             </div>

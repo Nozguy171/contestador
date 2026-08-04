@@ -35,6 +35,9 @@ export interface Order {
   type: OrderType
   items: OrderItem[]
   subtotal: number
+  discount: number
+  promotionId?: string
+  promotionName?: string
   deliveryFee: number
   total: number
   status: OrderStatus
@@ -45,6 +48,7 @@ export interface Order {
   aiCallSummary?: string
   transcript?: string
   statusHistory: StatusChange[]
+  source: "voice" | "pos" | "kiosk"
 }
 
 export interface DraftCartItem {
@@ -62,6 +66,8 @@ export interface DraftCart {
   items: DraftCartItem[]
   quote?: {
     subtotal: number
+    discount: number
+    promotionName?: string
     deliveryFee: number
     total: number
     orderType: OrderType
@@ -99,12 +105,23 @@ export interface Product {
   isSoldOut: boolean
   modifiers?: ProductModifier[]
   imageUrl?: string
+  ingredients?: ProductIngredient[]
 }
 
 export interface ProductModifier {
   id: string
   name: string
   price: number
+  groupName: string
+  action: "choice" | "add" | "remove"
+}
+
+export interface ProductIngredient {
+  id: string
+  inventoryItemId: string
+  inventoryItemName: string
+  unit: string
+  quantity: number
 }
 
 export interface Category {
@@ -112,6 +129,60 @@ export interface Category {
   name: string
   description?: string
   productCount: number
+}
+
+export type PromotionType = "percentage" | "two_for_one" | "second_half"
+export type PromotionScope = "all" | "category" | "product"
+
+export interface Promotion {
+  id: number
+  name: string
+  text: string
+  promotion_type: PromotionType
+  value: number
+  scope_type: PromotionScope
+  product_id?: number | null
+  category_id?: number | null
+  days_of_week: number[]
+  is_active: boolean
+  starts_at?: string | null
+  ends_at?: string | null
+  status: "active" | "scheduled" | "expired" | "inactive"
+  customer_description: string
+}
+
+export interface BusinessInsights {
+  enabled: boolean
+  data_window_days: number
+  inventory_window_days?: number
+  sample_size?: number
+  generated_at?: string
+  sales_by_weekday: Array<{
+    day_index: number
+    day: string
+    total_orders: number
+    total_revenue: number
+    average_orders: number
+    average_revenue: number
+  }>
+  purchase_suggestions: Array<{
+    item_id: number
+    name: string
+    unit: string
+    current_quantity: number
+    consumed_28_days: number
+    average_daily_use: number
+    estimated_days_remaining?: number | null
+    recommended_purchase: number
+  }>
+  recommendations: Array<{
+    kind: "promotion" | "inventory" | "learning"
+    title: string
+    message: string
+    confidence: "learning" | "medium" | "high"
+    action_href: string
+    suggested_day?: number
+  }>
 }
 
 export interface PhoneCustomer {
@@ -172,4 +243,40 @@ export interface MenuRule {
   description: string
   isActive: boolean
   config: Record<string, unknown>
+}
+
+export interface InventoryItem {
+  id: string
+  name: string
+  unit: string
+  quantity: number
+  minimumQuantity: number
+  costPerUnit: number
+  categoryId?: string
+  category?: InventoryCategory
+  imageUrl?: string
+  lowStockAlertEnabled: boolean
+  isLowStock: boolean
+  isActive: boolean
+}
+
+export interface InventoryCategory {
+  id: string
+  name: string
+  color: string
+  itemCount: number
+}
+
+export interface InventoryMovement {
+  id: string
+  inventoryItemId: string
+  itemName: string
+  unit: string
+  movementType: "initial" | "purchase" | "sale" | "waste" | "correction" | "reversal"
+  quantityDelta: number
+  quantityAfter: number
+  reason?: string
+  orderFolio?: string
+  changedByLabel?: string
+  createdAt: string
 }
