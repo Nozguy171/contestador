@@ -15,6 +15,7 @@ class CallSession:
     to_number: str
     state: str = "active"
     cart: list[dict[str, Any]] = field(default_factory=list)
+    unavailable_items: list[str] = field(default_factory=list)
     checkout: dict[str, Any] = field(default_factory=dict)
     cart_revision: int = 0
     quoted_revision: int | None = None
@@ -37,6 +38,7 @@ class CallSession:
             to_number=call_log.to_number or "",
             state="active",
             cart=list(saved.get("items") or []),
+            unavailable_items=[str(item) for item in saved.get("unavailable_items") or []],
             checkout=dict(saved.get("checkout") or {}),
             cart_revision=int(saved.get("revision") or 0),
             transfer_requested=bool(call_log.transfer_requested),
@@ -66,6 +68,7 @@ class CallSession:
             "version": 1,
             "revision": self.cart_revision,
             "items": self.cart,
+            "unavailable_items": self.unavailable_items,
             "checkout": self.checkout,
             "quote": self.quoted_order,
             "updated_at": datetime.now(timezone.utc).isoformat(),

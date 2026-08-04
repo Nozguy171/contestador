@@ -12,6 +12,7 @@ import {
   ChevronRight,
   Clock,
   CreditCard,
+  DollarSign,
   FileText,
   MapPin,
   MessageSquare,
@@ -116,6 +117,16 @@ export function OrderDetailDrawer({ order, open, onOpenChange, onStatusChange, i
                 </div>
               </div>
             </div>
+
+            {order.paymentMethod === "cash" && order.cashChangeFor && order.cashChangeFor > order.total ? (
+              <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3">
+                <DollarSign className="mt-0.5 h-4 w-4 text-amber-700" />
+                <div>
+                  <p className="text-sm font-medium text-amber-900">Se ocupa cambio</p>
+                  <p className="text-sm text-amber-800">Paga con {formatCurrency(order.cashChangeFor)} · entregar {formatCurrency(order.changeDue ?? order.cashChangeFor - order.total)}</p>
+                </div>
+              </div>
+            ) : null}
 
             {order.deliveryAddress ? (
               <div>

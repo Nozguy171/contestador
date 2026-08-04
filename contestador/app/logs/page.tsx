@@ -475,7 +475,7 @@ export default function LogsPage() {
                     </div>
                   </div>
 
-                  {selectedLog.draftCart?.items.length ? (
+                  {selectedLog.draftCart && (selectedLog.draftCart.items.length || selectedLog.draftCart.unavailableItems?.length) ? (
                     <Card className="border-blue-200 bg-blue-50/40">
                       <CardHeader className="pb-3">
                         <CardTitle className="flex items-center justify-between gap-3 text-sm font-medium">
@@ -486,6 +486,11 @@ export default function LogsPage() {
                         </CardTitle>
                       </CardHeader>
                       <CardContent className="space-y-3 pt-0">
+                        {selectedLog.draftCart.unavailableItems?.length ? (
+                          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                            No disponibles: {selectedLog.draftCart.unavailableItems.join(", ")}
+                          </div>
+                        ) : null}
                         {selectedLog.draftCart.items.map((item) => (
                           <div key={item.lineId} className="flex items-start justify-between gap-4 text-sm">
                             <div className="min-w-0">
@@ -508,6 +513,11 @@ export default function LogsPage() {
                             ).toFixed(2)}
                           </span>
                         </div>
+                        {selectedLog.draftCart.quote?.cashChangeFor && selectedLog.draftCart.quote.changeDue !== undefined ? (
+                          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                            Se ocupa cambio: paga con ${selectedLog.draftCart.quote.cashChangeFor.toFixed(2)} · entregar ${selectedLog.draftCart.quote.changeDue.toFixed(2)}
+                          </div>
+                        ) : null}
                       </CardContent>
                     </Card>
                   ) : null}

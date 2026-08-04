@@ -64,6 +64,17 @@ VOICE_FUNCTION_DECLARATIONS: list[dict[str, Any]] = [
         "parameters": {"type": "object", "properties": {}},
     },
     {
+        "name": "resolve_unavailable_item",
+        "description": "Marca como resuelto un producto que no está en el menú después de que el cliente acepta continuar sin él.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Producto no disponible que el cliente decidió omitir."}
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "remove_item",
         "description": "Elimina una línea del carrito preliminar usando el line_id devuelto al agregarla.",
         "parameters": {
@@ -84,6 +95,10 @@ VOICE_FUNCTION_DECLARATIONS: list[dict[str, Any]] = [
                 "customer_name": {"type": "string"},
                 "order_type": {"type": "string", "enum": ["pickup", "delivery"]},
                 "payment_method": {"type": "string", "enum": ["cash", "card", "online"]},
+                "cash_change_for": {
+                    "type": "string",
+                    "description": "Sólo para efectivo: monto con el que pagará si necesita cambio. Omítelo si no necesita cambio.",
+                },
                 "delivery_address": {
                     "type": "string",
                     "description": "Compatibilidad anterior. Para delivery usa delivery_address_parts.",
@@ -181,6 +196,7 @@ class OrderTools:
             "search_menu": self._search_menu,
             "get_item_options": self._get_item_options,
             "get_cart": self._get_cart,
+            "resolve_unavailable_item": self._resolve_unavailable_item,
             "add_to_cart": self._add_to_cart,
             "remove_item": self._remove_item,
             "quote_order": self._quote_order,
@@ -221,10 +237,18 @@ class OrderTools:
                     Category.name.ilike(f"%{query}%"),
                 )
             )
+        items = [_product_payload(item) for item in products.order_by(Product.name).limit(12).all()]
+        if query and not items and query.casefold() not in {
+            item.casefold() for item in self.session.unavailable_items
+        }:
+            self.session.unavailable_items.append(query)
+            self._persist()
         return {
             "ok": True,
             "query": query,
-            "items": [_product_payload(item) for item in products.order_by(Product.name).limit(12).all()],
+            "items": items,
+            "not_found": query if query and not items else None,
+            "unavailable_items": self.session.unavailable_items,
         }
 
     def _product(self, raw_id: Any) -> Product:
@@ -247,6 +271,25 @@ class OrderTools:
     def _get_cart(self, args: dict[str, Any]) -> dict[str, Any]:
         del args
         return {"ok": True, "cart": self._cart_summary()}
+
+    def _resolve_unavailable_item(self, args: dict[str, Any]) -> dict[str, Any]:
+        query = str(args.get("query") or "").strip()
+        if not query:
+            raise OrderValidationError("Falta indicar qué producto no disponible se omitirá.")
+        normalized = query.casefold()
+        before = len(self.session.unavailable_items)
+        self.session.unavailable_items = [
+            item for item in self.session.unavailable_items if item.casefold() != normalized
+        ]
+        if len(self.session.unavailable_items) == before:
+            raise OrderValidationError("Ese producto no está registrado como pendiente.")
+        self._persist()
+        return {
+            "ok": True,
+            "resolved": query,
+            "remaining_unavailable_items": self.session.unavailable_items,
+            "cart": self._cart_summary(),
+        }
 
     def _add_to_cart(self, args: dict[str, Any]) -> dict[str, Any]:
         product = self._product(args.get("id"))
@@ -333,6 +376,14 @@ class OrderTools:
         return {"ok": True, "removed_line_id": line_id, "cart": self._cart_summary()}
 
     def _quote_order(self, args: dict[str, Any]) -> dict[str, Any]:
+        if self.session.unavailable_items:
+            return {
+                "ok": False,
+                "error": "Hay productos solicitados que no están disponibles y todavía no se confirmó si se omiten.",
+                "unavailable_items": self.session.unavailable_items,
+                "instruction": "Dile al cliente cuáles no están disponibles. Si acepta continuar sin ellos, llama resolve_unavailable_item por cada uno y vuelve a cotizar.",
+                "cart": self._cart_summary(),
+            }
         if not self.session.cart:
             return {
                 "ok": False,
@@ -366,6 +417,7 @@ class OrderTools:
             "order_type": str(args.get("order_type") or "").strip(),
             "payment_method": str(args.get("payment_method") or "").strip(),
             "delivery_address": delivery_address,
+            "cash_change_for": str(args.get("cash_change_for") or "").strip() or None,
             "notes": str(args.get("notes") or "").strip() or None,
         }
         quote = quote_voice_order(
@@ -449,6 +501,7 @@ class OrderTools:
             "items": self.session.cart,
             "estimated_subtotal": _money(subtotal),
             "requires_quote": not self.session.quote_is_current,
+            "unavailable_items": self.session.unavailable_items,
         }
 
     def _persist(self) -> None:

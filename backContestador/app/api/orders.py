@@ -84,6 +84,7 @@ def create_order():
         "customer_name": customer_name,
         "order_type": data.get("type"),
         "payment_method": data.get("payment_method"),
+        "cash_change_for": data.get("cash_change_for"),
         "delivery_address": data.get("delivery_address"),
         "notes": data.get("notes"),
     }
@@ -123,6 +124,7 @@ def quote_order():
         "customer_name": str(data.get("customer_name") or "Mostrador").strip() or "Mostrador",
         "order_type": data.get("type"),
         "payment_method": data.get("payment_method"),
+        "cash_change_for": data.get("cash_change_for"),
         "delivery_address": data.get("delivery_address"),
         "notes": data.get("notes"),
     }
@@ -152,6 +154,7 @@ def update_order(order_id):
         "delivery_address",
         "notes",
         "payment_method",
+        "cash_change_for",
         "ai_call_summary",
         "transcript_preview",
         "call_log_id",

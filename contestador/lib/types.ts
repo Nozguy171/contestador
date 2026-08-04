@@ -45,6 +45,8 @@ export interface Order {
   deliveryAddress?: string
   notes?: string
   paymentMethod: PaymentMethod
+  cashChangeFor?: number
+  changeDue?: number
   aiCallSummary?: string
   transcript?: string
   statusHistory: StatusChange[]
@@ -64,6 +66,7 @@ export interface DraftCartItem {
 export interface DraftCart {
   revision: number
   items: DraftCartItem[]
+  unavailableItems?: string[]
   quote?: {
     subtotal: number
     discount: number
@@ -72,6 +75,8 @@ export interface DraftCart {
     total: number
     orderType: OrderType
     paymentMethod: PaymentMethod
+    cashChangeFor?: number
+    changeDue?: number
   }
 }
 

@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 
 from app.extensions import db
@@ -141,6 +141,14 @@ def quote_voice_order(*, business, cart, checkout):
     customer_name = _required_text(checkout, "customer_name", "el nombre del cliente")
     delivery_address = str(checkout.get("delivery_address") or "").strip() or None
     notes = str(checkout.get("notes") or "").strip() or None
+    cash_change_for = None
+    if payment_method == PaymentMethod.CASH and checkout.get("cash_change_for") is not None:
+        try:
+            cash_change_for = _to_decimal(checkout.get("cash_change_for"))
+        except (InvalidOperation, ValueError) as exc:
+            raise OrderValidationError("El monto para calcular el cambio no es válido.") from exc
+        if cash_change_for <= 0:
+            raise OrderValidationError("El monto con el que pagará debe ser mayor que cero.")
     settings = business.settings
 
     if order_type == OrderType.DELIVERY:
@@ -253,12 +261,19 @@ def quote_voice_order(*, business, cart, checkout):
 
     promotion, discount = calculate_best_promotion(business, quote_items)
     total = max(Decimal("0.00"), subtotal - discount) + delivery_fee
+    change_due = None
+    if cash_change_for is not None:
+        if cash_change_for < total:
+            raise OrderValidationError(f"Para dar cambio, el monto debe ser de al menos ${total:.2f}.")
+        change_due = cash_change_for - total
 
     return {
         "items": quote_items,
         "customer_name": customer_name,
         "order_type": order_type.value,
         "payment_method": payment_method.value,
+        "cash_change_for": f"{cash_change_for:.2f}" if cash_change_for is not None else None,
+        "change_due": f"{change_due:.2f}" if change_due is not None else None,
         "delivery_address": delivery_address,
         "notes": notes,
         "subtotal": f"{subtotal:.2f}",
@@ -320,6 +335,7 @@ def create_order_from_quote(
         delivery_address=quote.get("delivery_address"),
         notes=quote.get("notes"),
         payment_method=PaymentMethod(quote["payment_method"]),
+        cash_change_for=_to_decimal(quote.get("cash_change_for")) if quote.get("cash_change_for") is not None else None,
         ai_call_summary=ai_call_summary,
         transcript_preview=transcript_preview,
         source=source,

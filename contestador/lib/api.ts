@@ -221,6 +221,7 @@ type BackendOrder = {
   delivery_address?: string | null
   notes?: string | null
   payment_method: "cash" | "card" | "online"
+  cash_change_for?: string | number | null
   ai_call_summary?: string | null
   transcript_preview?: string | null
   status_history: Array<{
@@ -256,6 +257,7 @@ type BackendCall = {
   transfer_requested: boolean
   draft_cart?: {
     revision?: number
+    unavailable_items?: string[]
     items?: Array<{
       line_id: string
       product_id: number
@@ -273,6 +275,8 @@ type BackendCall = {
       total: string | number
       order_type: "pickup" | "delivery"
       payment_method: "cash" | "card" | "online"
+      cash_change_for?: string | number | null
+      change_due?: string | number | null
     } | null
   } | null
 }
@@ -478,6 +482,8 @@ function mapOrder(order: BackendOrder) {
     deliveryAddress: order.delivery_address ?? undefined,
     notes: order.notes ?? undefined,
     paymentMethod: order.payment_method,
+    cashChangeFor: order.cash_change_for == null ? undefined : toNumber(order.cash_change_for),
+    changeDue: order.cash_change_for == null ? undefined : Math.max(0, toNumber(order.cash_change_for) - toNumber(order.total)),
     aiCallSummary: order.ai_call_summary ?? undefined,
     transcript: order.transcript_preview ?? undefined,
     statusHistory: order.status_history.map((change) => ({
@@ -509,6 +515,7 @@ function mapCall(call: BackendCall) {
     draftCart: call.draft_cart
       ? {
           revision: call.draft_cart.revision ?? 0,
+          unavailableItems: call.draft_cart.unavailable_items ?? [],
           items: (call.draft_cart.items ?? []).map((item) => ({
             lineId: item.line_id,
             productId: String(item.product_id),
@@ -531,6 +538,8 @@ function mapCall(call: BackendCall) {
                 total: toNumber(call.draft_cart.quote.total),
                 orderType: call.draft_cart.quote.order_type,
                 paymentMethod: call.draft_cart.quote.payment_method,
+                cashChangeFor: call.draft_cart.quote.cash_change_for == null ? undefined : toNumber(call.draft_cart.quote.cash_change_for),
+                changeDue: call.draft_cart.quote.change_due == null ? undefined : toNumber(call.draft_cart.quote.change_due),
               }
             : undefined,
         }
@@ -743,6 +752,7 @@ export async function createManualOrder(payload: {
   phoneNumber?: string
   type: "pickup" | "delivery"
   paymentMethod: "cash" | "card" | "online"
+  cashChangeFor?: number
   deliveryAddress?: string
   notes?: string
   source?: "pos" | "kiosk"
@@ -761,6 +771,7 @@ export async function createManualOrder(payload: {
       phone_number: payload.phoneNumber,
       type: payload.type,
       payment_method: payload.paymentMethod,
+      cash_change_for: payload.cashChangeFor,
       delivery_address: payload.deliveryAddress,
       notes: payload.notes,
       source: payload.source ?? "pos",
@@ -779,6 +790,7 @@ export async function quoteManualOrder(payload: {
   customerName?: string
   type: "pickup" | "delivery"
   paymentMethod: "cash" | "card" | "online"
+  cashChangeFor?: number
   deliveryAddress?: string
   notes?: string
   items: Array<{
@@ -804,6 +816,7 @@ export async function quoteManualOrder(payload: {
       customer_name: payload.customerName,
       type: payload.type,
       payment_method: payload.paymentMethod,
+      cash_change_for: payload.cashChangeFor,
       delivery_address: payload.deliveryAddress,
       notes: payload.notes,
       items: payload.items.map((item) => ({

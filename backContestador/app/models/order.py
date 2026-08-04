@@ -31,6 +31,7 @@ class Order(TimestampMixin, SerializerMixin, db.Model):
     delivery_address = db.Column(db.Text, nullable=True)
     notes = db.Column(db.Text, nullable=True)
     payment_method = db.Column(Enum(PaymentMethod, native_enum=False), nullable=False)
+    cash_change_for = db.Column(db.Numeric(10, 2), nullable=True)
     ai_call_summary = db.Column(db.Text, nullable=True)
     transcript_preview = db.Column(db.Text, nullable=True)
     source = db.Column(db.String(16), nullable=False, default="voice", server_default="voice")
