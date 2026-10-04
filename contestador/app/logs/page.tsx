@@ -707,7 +707,7 @@ export default function LogsPage() {
                       </p>
                       {(() => {
                         const metrics = selectedLog.voiceDiagnostics?.metrics ?? {}
-                        const displayMetrics = [
+                        const displayMetrics: [string, unknown][] = [
                           ["Frames recibidos", metrics.media_frames_received],
                           ["Frames enviados", metrics.media_frames_sent_to_gemini],
                           ["Audio perdido (ms)", metrics.audio_dropped_ms],
