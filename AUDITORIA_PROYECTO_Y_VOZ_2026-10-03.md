@@ -109,15 +109,24 @@ Gemini documenta vocabulario personalizado para términos propios; la documentac
 | 3 | Construir un conjunto de evaluación de llamadas de Mexicali con transcripción esperada y campos correctos de pedido/dirección. Incluir ruido, distintas velocidades, números, nombres de calles y repeticiones. | Comparar cambios con la misma evidencia. |
 | 4 | Añadir catálogo de vialidades/asentamientos, normalización conservadora y confirmación de candidatos; mantener el texto original. | Reducir domicilios mal escritos sin inventar correcciones. |
 | 5 | Comparar el agente actual con una ruta de transcripción dedicada con vocabulario local, si el baseline demuestra errores acústicos en calles. | Separar reconocimiento de voz de razonamiento conversacional antes de asumir una arquitectura nueva. |
-| 6 | Revisar `.env` de producción, API URL del frontend, dominio/WSS, callback y firma Twilio; ejecutar una llamada end-to-end en el droplet. | Confirmar que el sistema desplegado es el mismo que describe el código. |
+| 6 | Probar WSS, webhook/callback de Twilio y una llamada end-to-end; decidir si el registro público debe seguir abierto. | Verificar el flujo real de voz después de validar dominio, HTTPS y API. |
 
 Métricas mínimas: tasa de error de caracteres/palabras de la transcripción; exactitud por campo (calle, número, colonia, producto, cantidad); cuántas veces se corrige o repite; domicilios candidatos aceptados; pedidos transferidos; llamadas con `inbound_audio_backpressure`; latencia hasta respuesta; pedidos creados con dirección verificada. No usar únicamente una “confianza promedio” si el proveedor no entrega una confianza real comparable.
 
-## Qué no pude verificar
+## Verificación de producción — 2026-10-04
 
-- No confirmé el estado visual actual de la web ni los datos reales: no hay servicio respondiendo en `localhost:3000` en esta sesión.
-- El intento de abrir el dominio documentado desde navegador agotó el tiempo; el acceso web tampoco pudo abrirlo.
-- No pude identificar un destino verificable del droplet: el dominio público que aparece en el `.env` local es un ejemplo y no resolvió; el dominio de Nginx no aparece en `known_hosts`. No probé direcciones IP al azar ni usé la llave contra otros servidores.
-- No ejecuté pruebas automatizadas, no inicié contenedores y no hice llamadas telefónicas. La revisión del reconocimiento es estática; para confirmar la causa de cada llamada hacen falta eventos y muestras de llamadas reales.
+- El droplet `pulsor` sirve `https://demoagenda.shop`; el sitio y `https://demoagenda.shop/api/v1/health` devolvieron HTTP 200 con TLS válido.
+- La configuración observada en el servidor usa `https://demoagenda.shop` para `PUBLIC_BASE_URL`, `NEXT_PUBLIC_API_URL` y CORS. `TWILIO_VALIDATE_SIGNATURE=true`; la configuración de callback no se verificó.
+- Después del despliegue, API y panel quedaron activos, y la base confirmó la migración `9a41c8d75e20` y la tabla `call_log_transcript_events`.
+- La configuración de producción tiene `REGISTER_OPEN=true`. El endpoint de registro crea usuario y negocio sin exigir autenticación; si el alta debe ser privada, hay que cerrar el registro.
+- La consulta agregada de producción encontró 13 llamadas entre el 4 y el 10 de agosto: 10 `COMPLETED`, 3 `INCOMPLETE`, 5 asociadas a pedidos y 2 sin transcript. Esos registros no tienen `voice_metrics`, no hay filas en `call_log_transcript_events` y no se guardaron `call_log_error_flags`. Todas anteceden al despliegue del 4 de octubre, así que no permiten medir la versión nueva ni atribuir la causa de los fallos reportados.
+- El build de Next.js terminó correctamente. Durante `npm ci`, npm reportó 13 vulnerabilidades en dependencias: 2 moderadas, 10 altas y 1 crítica. Los avisos no se clasificaron por paquete/advisory en esta auditoría.
+- Los valores del `.env` local siguen siendo de desarrollo y no son los de producción; usar ese archivo local para construir el sitio rompería el acceso remoto al API y desactivaría la validación de firmas.
 
-En consecuencia, este documento describe el checkout auditado y marca explícitamente las comprobaciones pendientes de producción. No contiene valores de credenciales.
+## Comprobaciones pendientes
+
+- No se hizo una llamada telefónica end-to-end después del despliegue ni se probó el handshake WSS/webhook de Twilio.
+- No se inspeccionaron transcripts crudos ni audio. Para establecer si falla el reconocimiento, el manejo de turnos o la captura al guardar, hace falta evaluar una muestra autorizada y etiquetada; hoy no hay telemetría de voz histórica para separarlos.
+- La verificación HTTP confirma disponibilidad, no el flujo visual de login, pedidos ni captura de llamadas.
+
+El documento no incluye contraseñas, tokens ni llaves privadas.
