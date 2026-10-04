@@ -707,7 +707,7 @@ export default function LogsPage() {
                       </p>
                       {(() => {
                         const metrics = selectedLog.voiceDiagnostics?.metrics ?? {}
-                        const displayMetrics: [string, unknown][] = [
+                        const displayMetrics = ([
                           ["Frames recibidos", metrics.media_frames_received],
                           ["Frames enviados", metrics.media_frames_sent_to_gemini],
                           ["Audio perdido (ms)", metrics.audio_dropped_ms],
@@ -715,7 +715,7 @@ export default function LogsPage() {
                           ["Huecos de audio", metrics.media_chunk_gaps],
                           ["Espera media en cola (ms)", metrics.queue_wait_ms_average],
                           ["Eventos de transcript", metrics.transcript_events],
-                        ].filter(([, value]) => value !== undefined)
+                        ] as [string, unknown][]).filter(([, value]) => value !== undefined)
                         return displayMetrics.length ? (
                           <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
                             {displayMetrics.map(([label, value]) => (
