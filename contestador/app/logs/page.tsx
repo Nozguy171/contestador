@@ -203,7 +203,7 @@ export default function LogsPage() {
     const avgDuration = total ? logs.reduce((sum, log) => sum + log.duration, 0) / total : 0
     const confidentLogs = logs.filter((log) => log.confidence !== null)
     const avgConfidence = confidentLogs.length
-      ? confidentLogs.reduce((sum, log) => sum + log.confidence, 0) / confidentLogs.length
+      ? confidentLogs.reduce((sum, log) => sum + (log.confidence ?? 0), 0) / confidentLogs.length
       : 0
 
     return {
