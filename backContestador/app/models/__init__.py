@@ -1,5 +1,6 @@
 from app.models.base import JSON_VARIANT, SerializerMixin, TimestampMixin
 from app.models.bot import BotConfig
+from app.models.address import GeoCatalogVersion, GeoLocality, GeoSettlement, GeoStreet
 from app.models.business import (
     Business,
     BusinessDeliveryZone,
@@ -9,7 +10,7 @@ from app.models.business import (
     BusinessSetting,
     BusinessUser,
 )
-from app.models.call_log import CallLog, CallLogErrorFlag, CallLogToolCall
+from app.models.call_log import CallLog, CallLogErrorFlag, CallLogToolCall, CallLogTranscriptEvent
 from app.models.customer import Customer
 from app.models.faq import FAQ
 from app.models.inventory import InventoryCategory, InventoryItem, InventoryMovement
@@ -23,6 +24,10 @@ __all__ = [
     "TimestampMixin",
     "User",
     "Business",
+    "GeoCatalogVersion",
+    "GeoLocality",
+    "GeoStreet",
+    "GeoSettlement",
     "BusinessUser",
     "BusinessHour",
     "BusinessSetting",
@@ -46,5 +51,6 @@ __all__ = [
     "CallLog",
     "CallLogErrorFlag",
     "CallLogToolCall",
+    "CallLogTranscriptEvent",
     "Customer",
 ]

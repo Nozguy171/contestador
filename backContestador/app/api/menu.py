@@ -1,4 +1,5 @@
 from decimal import Decimal, InvalidOperation
+import unicodedata
 
 from flask import Blueprint, g, request
 from sqlalchemy.exc import IntegrityError
@@ -54,9 +55,38 @@ def _normalize_modifiers(raw_modifiers):
                 "price": price,
                 "is_active": bool(raw_modifier.get("is_active", True)),
                 "sort_order": sort_order,
+                "is_required": bool(raw_modifier.get("is_required", False)) if action == "choice" else False,
             }
         )
     return normalized
+
+
+def _normalize_aliases(raw_aliases, canonical_name):
+    if raw_aliases in (None, ""):
+        return []
+    if not isinstance(raw_aliases, list):
+        return None
+    if len(raw_aliases) > 12:
+        return None
+    canonical = _alias_key(canonical_name)
+    normalized = []
+    seen = {canonical}
+    for raw in raw_aliases:
+        alias = " ".join(str(raw or "").split()).strip()
+        if len(alias) > 80:
+            return None
+        key = _alias_key(alias)
+        if not alias or not key or key in seen:
+            continue
+        seen.add(key)
+        normalized.append(alias)
+    return normalized
+
+
+def _alias_key(value):
+    text = unicodedata.normalize("NFKD", str(value or "").casefold())
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    return " ".join("".join(char if char.isalnum() else " " for char in text).split())
 
 
 def _normalize_ingredients(raw_ingredients):
@@ -226,6 +256,9 @@ def create_product():
     modifiers = _normalize_modifiers(data.get("modifiers", []))
     if modifiers is None:
         return error("Revisa el nombre, grupo, acción y precio de las personalizaciones.", 400)
+    aliases = _normalize_aliases(data.get("aliases", []), name)
+    if aliases is None:
+        return error("Los alias deben ser una lista de hasta 12 nombres cortos.", 400)
     ingredients = _normalize_ingredients(data.get("ingredients", []))
     if ingredients is None:
         return error("La receta contiene ingredientes o cantidades inválidas.", 400)
@@ -239,6 +272,7 @@ def create_product():
         category_id=data.get("category_id"),
         name=name,
         description=data.get("description"),
+        aliases=aliases,
         price=price,
         image_url=image_url,
         is_active=bool(data.get("is_active", True)),
@@ -258,6 +292,7 @@ def create_product():
                 price=raw_modifier.get("price", 0),
                 is_active=raw_modifier.get("is_active", True),
                 sort_order=raw_modifier.get("sort_order", 0),
+                is_required=raw_modifier.get("is_required", False),
             )
         )
 
@@ -290,6 +325,11 @@ def update_product(product_id):
         modifiers = _normalize_modifiers(data["modifiers"])
         if modifiers is None:
             return error("Revisa el nombre, grupo, acción y precio de las personalizaciones.", 400)
+    if "aliases" in data:
+        aliases = _normalize_aliases(data["aliases"], data.get("name", item.name))
+        if aliases is None:
+            return error("Los alias deben ser una lista de hasta 12 nombres cortos.", 400)
+        data["aliases"] = aliases
     ingredients = None
     if "ingredients" in data:
         ingredients = _normalize_ingredients(data["ingredients"])
@@ -300,7 +340,7 @@ def update_product(product_id):
             data["image_url"] = _image_url(data.get("image_url"))
         except ValueError as exc:
             return error(str(exc), 400)
-    for field in ["category_id", "name", "description", "price", "image_url", "is_active", "is_sold_out"]:
+    for field in ["category_id", "name", "description", "price", "image_url", "is_active", "is_sold_out", "aliases"]:
         if field in data:
             setattr(item, field, data[field])
 
@@ -319,6 +359,7 @@ def update_product(product_id):
                     price=raw_modifier.get("price", 0),
                     is_active=raw_modifier.get("is_active", True),
                     sort_order=raw_modifier.get("sort_order", 0),
+                    is_required=raw_modifier.get("is_required", False),
                 )
             )
 

@@ -4,12 +4,14 @@ import asyncio
 import base64
 import binascii
 from datetime import datetime, timezone
+from dataclasses import dataclass
+import time
 from typing import Any
 
 from flask import Response, current_app, request
 
 from app.extensions import db
-from app.models import CallLog, CallLogErrorFlag, Order
+from app.models import CallLog, CallLogErrorFlag, CallLogTranscriptEvent, Order
 from app.models.enums import CallStatus
 from app.services.audio_bridge import AudioBridge
 from app.services.customers import get_or_create_customer
@@ -24,23 +26,22 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _merge_transcript_chunk(current: str, value: Any) -> str:
-    piece = " ".join(str(value or "").split())
-    if not piece:
-        return current
-    if not current:
-        return piece
-    if piece == current or current.endswith(piece):
-        return current
-    if piece.startswith(current):
-        return piece
+@dataclass(frozen=True)
+class InboundAudioFrame:
+    pcm: bytes
+    received_monotonic: float
+    duration_ms: float
 
-    for size in range(min(len(current), len(piece)), 1, -1):
-        if current[-size:].casefold() == piece[:size].casefold():
-            return current + piece[size:]
 
-    separator = "" if piece[0] in ".,!?;:%)]}" or current[-1] in "¿¡([{\"" else " "
-    return f"{current}{separator}{piece}"
+def _join_transcript_pieces(pieces: list[str]) -> str:
+    current = ""
+    for raw_piece in pieces:
+        piece = " ".join(str(raw_piece or "").split())
+        if not piece:
+            continue
+        separator = "" if piece[0] in ".,!?;:%)]}" or current.endswith(("¿", "¡", "(", "[", "{", '"')) else " "
+        current += separator + piece
+    return current
 
 
 def get_or_create_call_log(
@@ -99,7 +100,7 @@ def map_twilio_call_status(status: str | None) -> CallStatus:
 
 
 class TwilioGeminiBridge:
-    AUDIO_QUEUE_CHUNKS = 10
+    AUDIO_QUEUE_CHUNKS = 250
 
     def __init__(self, ws: Any, app: Any):
         self.ws = ws
@@ -116,14 +117,140 @@ class TwilioGeminiBridge:
         self.call_log = None
         self._stream_active = True
         self._conversation_lines: list[str] = []
-        self._input_transcript = ""
-        self._output_transcript = ""
+        self._input_transcript_events: list[str] = []
+        self._output_transcript_events: list[str] = []
         self._assistant_turns: list[str] = []
         self._turn_had_audio = False
         self._mark_counter = 0
+        self._transcript_event_sequence = 0
+        self._pending_transcript_events = 0
+        self._last_twilio_sequence: int | None = None
+        self._last_media_chunk: int | None = None
+        self._last_media_timestamp: float | None = None
+        self._last_media_duration_ms = 0.0
+        self.voice_metrics = {
+            "twilio_messages": 0,
+            "media_frames_received": 0,
+            "media_frames_sent_to_gemini": 0,
+            "audio_received_ms": 0.0,
+            "audio_sent_ms": 0.0,
+            "sequence_gaps": 0,
+            "media_chunk_gaps": 0,
+            "timestamp_gap_ms": 0.0,
+            "audio_frames_dropped": 0,
+            "audio_dropped_ms": 0.0,
+            "queue_high_water_chunks": 0,
+            "queue_wait_ms_total": 0.0,
+            "queue_wait_ms_max": 0.0,
+            "gemini_send_ms_total": 0.0,
+            "gemini_send_ms_max": 0.0,
+            "transcript_events": 0,
+            "interim_transcript_events": 0,
+        }
+
+    def _capture_sequence_number(self, event: dict[str, Any]) -> None:
+        try:
+            sequence = int(event.get("sequenceNumber"))
+        except (TypeError, ValueError):
+            return
+        if self._last_twilio_sequence is not None and sequence > self._last_twilio_sequence + 1:
+            self.voice_metrics["sequence_gaps"] += sequence - self._last_twilio_sequence - 1
+        self._last_twilio_sequence = sequence
+
+    def _capture_media_metadata(self, media: dict[str, Any], duration_ms: float) -> None:
+        try:
+            chunk = int(media.get("chunk"))
+        except (TypeError, ValueError):
+            chunk = None
+        if chunk is not None:
+            if self._last_media_chunk is not None and chunk > self._last_media_chunk + 1:
+                self.voice_metrics["media_chunk_gaps"] += chunk - self._last_media_chunk - 1
+            self._last_media_chunk = chunk
+        try:
+            timestamp = float(media.get("timestamp"))
+        except (TypeError, ValueError):
+            timestamp = None
+        if timestamp is not None:
+            if self._last_media_timestamp is not None:
+                gap = timestamp - (self._last_media_timestamp + self._last_media_duration_ms)
+                if gap > 40:
+                    self.voice_metrics["timestamp_gap_count"] = self.voice_metrics.get("timestamp_gap_count", 0) + 1
+                    self.voice_metrics["timestamp_gap_ms"] += gap
+            self._last_media_timestamp = timestamp
+            self._last_media_duration_ms = duration_ms
+
+    def _record_dropped_frame(self, frame: InboundAudioFrame | None) -> None:
+        if frame is None:
+            return
+        self.voice_metrics["audio_frames_dropped"] += 1
+        self.voice_metrics["audio_dropped_ms"] += frame.duration_ms
+
+    def _account_queued_audio(self, queue: asyncio.Queue[InboundAudioFrame | None]) -> None:
+        while not queue.empty():
+            try:
+                frame = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if frame is not None:
+                self._record_dropped_frame(frame)
+
+    def _save_voice_metrics(self) -> None:
+        if not self.call_log or not self.runtime.voice_audio_diagnostics:
+            return
+        metrics = dict(self.voice_metrics)
+        sent = max(int(metrics.get("media_frames_sent_to_gemini", 0)), 1)
+        metrics["queue_wait_ms_average"] = round(metrics.get("queue_wait_ms_total", 0.0) / sent, 2)
+        metrics["gemini_send_ms_average"] = round(metrics.get("gemini_send_ms_total", 0.0) / sent, 2)
+        metrics["audio_received_ms"] = round(metrics.get("audio_received_ms", 0.0), 2)
+        metrics["audio_sent_ms"] = round(metrics.get("audio_sent_ms", 0.0), 2)
+        metrics["audio_dropped_ms"] = round(metrics.get("audio_dropped_ms", 0.0), 2)
+        metrics["timestamp_gap_ms"] = round(metrics.get("timestamp_gap_ms", 0.0), 2)
+        metrics["model"] = self.runtime.gemini_model
+        metrics["transcript_events_v2"] = self.runtime.voice_transcript_events_v2
+        metrics["audio_diagnostics"] = self.runtime.voice_audio_diagnostics
+        self.call_log.voice_metrics = metrics
+
+    def _store_transcript_event(
+        self,
+        event_type: str,
+        *,
+        speaker: str | None = None,
+        raw_text: str | None = None,
+        details: dict[str, Any] | None = None,
+        received_at: datetime | None = None,
+    ) -> None:
+        if not self.call_log or not self.runtime.voice_transcript_events_v2:
+            return
+        self._transcript_event_sequence += 1
+        db.session.add(
+            CallLogTranscriptEvent(
+                call_log_id=self.call_log.id,
+                receive_sequence=self._transcript_event_sequence,
+                event_type=event_type[:40],
+                speaker=speaker[:16] if speaker else None,
+                model=self.runtime.gemini_model,
+                raw_text=str(raw_text)[:4000] if raw_text is not None else None,
+                received_at=received_at or _now_utc(),
+                details={key: value for key, value in (details or {}).items() if key not in {"handle", "payload"}},
+            )
+        )
+        self._pending_transcript_events += 1
+        self.voice_metrics["transcript_events"] += 1
+        if event_type == "input_transcript_interim":
+            self.voice_metrics["interim_transcript_events"] += 1
+        if self._pending_transcript_events >= 25:
+            self._save_voice_metrics()
+            db.session.commit()
+            self._pending_transcript_events = 0
 
     async def run(self) -> None:
         with self.app.app_context():
+            inbound_audio: asyncio.Queue[InboundAudioFrame | None] = asyncio.Queue(
+                maxsize=self.AUDIO_QUEUE_CHUNKS
+            )
+            twilio_task = None
+            send_task = None
+            gemini_task = None
             try:
                 if not self.twilio.validate_websocket():
                     self.app.logger.warning("Rejected Media Stream with invalid Twilio signature")
@@ -143,6 +270,8 @@ class TwilioGeminiBridge:
 
                 self.call_log.provider_stream_sid = self.session.stream_sid
                 self.call_log.session_state = "active"
+                self.call_log.gemini_model = self.runtime.gemini_model
+                self._save_voice_metrics()
                 db.session.commit()
 
                 system_prompt = (
@@ -161,40 +290,46 @@ class TwilioGeminiBridge:
                     call_log=self.call_log,
                     twilio_adapter=self.twilio,
                 )
-                inbound_audio: asyncio.Queue[bytes | None] = asyncio.Queue(
-                    maxsize=self.AUDIO_QUEUE_CHUNKS
-                )
-
+                # Start reading before Gemini connects and speaks its greeting so
+                # the caller's opening words enter the same bounded live queue.
+                twilio_task = asyncio.create_task(self._receive_twilio(inbound_audio))
                 async with provider.connect() as gemini_session:
+                    send_task = asyncio.create_task(
+                        self._send_audio_to_gemini(provider, gemini_session, inbound_audio)
+                    )
                     welcome = (
                         self.business.bot_config.welcome_message
                         if self.business.bot_config and self.business.bot_config.welcome_message
                         else f"Gracias por llamar a {self.business.name}. ¿En qué te puedo ayudar?"
                     )
                     await provider.start_greeting(gemini_session, welcome)
-                    tasks = {
-                        asyncio.create_task(self._receive_twilio(inbound_audio)),
-                        asyncio.create_task(
-                            self._send_audio_to_gemini(provider, gemini_session, inbound_audio)
-                        ),
-                        asyncio.create_task(
-                            self._receive_gemini(provider, gemini_session, tools)
-                        ),
-                    }
-                    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                    gemini_task = asyncio.create_task(
+                        self._receive_gemini(provider, gemini_session, tools)
+                    )
+                    tasks = {twilio_task, send_task, gemini_task}
+                    done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                    if twilio_task in done and twilio_task.exception() is None:
+                        # stop/disconnect inserts a sentinel after the final frame;
+                        # let the sender account for and drain frames already queued.
+                        await send_task
+                    elif send_task in done and send_task.exception() is None and twilio_task.done():
+                        pass
+                    else:
+                        for task in done:
+                            exception = task.exception()
+                            if exception:
+                                raise exception
+                        self._record_error("gemini_stream_closed")
+                        self.call_log.status = CallStatus.FAILED
                     self._stream_active = False
-                    for task in pending:
-                        task.cancel()
-                    close = getattr(self.ws, "close", None)
-                    if close:
-                        await asyncio.to_thread(close)
-                    await asyncio.gather(*pending, return_exceptions=True)
-                    results = await asyncio.gather(*done, return_exceptions=True)
-                    for result in results:
-                        if isinstance(result, Exception) and not isinstance(
-                            result, asyncio.CancelledError
-                        ):
-                            raise result
+                    if not gemini_task.done():
+                        gemini_task.cancel()
+                    if not twilio_task.done():
+                        close = getattr(self.ws, "close", None)
+                        if close:
+                            await asyncio.to_thread(close)
+                        twilio_task.cancel()
+                    await asyncio.gather(twilio_task, send_task, gemini_task, return_exceptions=True)
             except Exception as exc:
                 self.app.logger.exception("Voice bridge failed: %s", type(exc).__name__)
                 db.session.rollback()
@@ -202,6 +337,21 @@ class TwilioGeminiBridge:
                 if self.call_log:
                     self.call_log.status = CallStatus.FAILED
             finally:
+                self._stream_active = False
+                if twilio_task and not twilio_task.done():
+                    close = getattr(self.ws, "close", None)
+                    if close:
+                        try:
+                            await asyncio.to_thread(close)
+                        except Exception:
+                            pass
+                    twilio_task.cancel()
+                pending_tasks = [task for task in (twilio_task, send_task, gemini_task) if task and not task.done()]
+                for task in pending_tasks:
+                    task.cancel()
+                if pending_tasks:
+                    await asyncio.gather(*pending_tasks, return_exceptions=True)
+                self._account_queued_audio(inbound_audio)
                 self._finalize_call_log()
 
     async def _await_start_event(self) -> bool:
@@ -218,55 +368,86 @@ class TwilioGeminiBridge:
             if not context:
                 return False
             self.session, self.business, self.call_log = context
+            self._capture_sequence_number(event)
+            media_format = ((event.get("start") or {}).get("mediaFormat") or {})
+            self.voice_metrics["twilio_media_format"] = {
+                "encoding": media_format.get("encoding"),
+                "sample_rate": media_format.get("sampleRate"),
+                "channels": media_format.get("channels"),
+            }
+            if media_format and (
+                media_format.get("encoding") not in (None, "audio/x-mulaw", "mulaw")
+                or media_format.get("sampleRate") not in (None, 8000, "8000")
+                or media_format.get("channels") not in (None, 1, "1")
+            ):
+                self._record_error("unsupported_twilio_audio_format")
+                self.call_log.status = CallStatus.FAILED
+                return False
             return True
 
-    async def _receive_twilio(self, queue: asyncio.Queue[bytes | None]) -> None:
-        while self._stream_active:
-            raw_message = await asyncio.to_thread(self.ws.receive)
-            if raw_message is None:
-                break
-            event = self.twilio.decode_event(raw_message)
-            event_type = event.get("event")
-            if event_type == "media":
-                if event.get("streamSid") != self.session.stream_sid:
-                    continue
-                media = event.get("media") or {}
-                if media.get("track") not in (None, "inbound"):
-                    continue
-                try:
-                    pcm = self.audio.twilio_payload_to_gemini_pcm(media.get("payload") or "")
-                except (binascii.Error, ValueError):
-                    self._record_error("invalid_twilio_media")
-                    continue
-                if not pcm:
-                    continue
-                if queue.full():
-                    try:
-                        queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        pass
-                    self._record_error("inbound_audio_backpressure")
-                queue.put_nowait(pcm)
-            elif event_type == "mark":
-                mark_name = str((event.get("mark") or {}).get("name") or "")
-                self.session.pending_marks.discard(mark_name)
-                if not self.session.pending_marks:
-                    self.session.response_playing = False
-                    if self.session.hangup_after_response:
-                        await self._hangup_after_response()
-                        break
-            elif event_type == "stop":
-                break
-
-        self._stream_active = False
+    async def _receive_twilio(self, queue: asyncio.Queue[InboundAudioFrame | None]) -> None:
         try:
-            queue.put_nowait(None)
-        except asyncio.QueueFull:
+            while self._stream_active:
+                raw_message = await asyncio.to_thread(self.ws.receive)
+                if raw_message is None:
+                    break
+                event = self.twilio.decode_event(raw_message)
+                self.voice_metrics["twilio_messages"] += 1
+                self._capture_sequence_number(event)
+                event_type = event.get("event")
+                if event_type == "media":
+                    if event.get("streamSid") != self.session.stream_sid:
+                        continue
+                    media = event.get("media") or {}
+                    if media.get("track") not in (None, "inbound"):
+                        continue
+                    try:
+                        pcm = self.audio.twilio_payload_to_gemini_pcm(media.get("payload") or "")
+                    except (binascii.Error, ValueError):
+                        self.voice_metrics["malformed_media_frames"] = self.voice_metrics.get("malformed_media_frames", 0) + 1
+                        self._record_error("invalid_twilio_media")
+                        continue
+                    if not pcm:
+                        continue
+                    duration_ms = len(pcm) / 32
+                    self._capture_media_metadata(media, duration_ms)
+                    self.voice_metrics["media_frames_received"] += 1
+                    self.voice_metrics["audio_received_ms"] += duration_ms
+                    frame = InboundAudioFrame(pcm, time.monotonic(), duration_ms)
+                    if queue.full():
+                        try:
+                            dropped = queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            dropped = None
+                        if dropped is not None:
+                            self._record_dropped_frame(dropped)
+                        self._record_error("inbound_audio_backpressure")
+                    queue.put_nowait(frame)
+                    self.voice_metrics["queue_high_water_chunks"] = max(
+                        self.voice_metrics["queue_high_water_chunks"], queue.qsize()
+                    )
+                elif event_type == "mark":
+                    mark_name = str((event.get("mark") or {}).get("name") or "")
+                    self.session.pending_marks.discard(mark_name)
+                    if not self.session.pending_marks:
+                        self.session.response_playing = False
+                        if self.session.hangup_after_response:
+                            await self._hangup_after_response()
+                            break
+                elif event_type == "stop":
+                    break
+        finally:
+            self._stream_active = False
             try:
-                queue.get_nowait()
-            except asyncio.QueueEmpty:
-                pass
-            queue.put_nowait(None)
+                queue.put_nowait(None)
+            except asyncio.QueueFull:
+                try:
+                    dropped = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    dropped = None
+                if dropped is not None:
+                    self._record_dropped_frame(dropped)
+                queue.put_nowait(None)
 
     async def _hangup_after_response(self) -> None:
         if not self.session or not self.session.hangup_after_response:
@@ -284,18 +465,46 @@ class TwilioGeminiBridge:
             self._stream_active = False
 
     async def _send_audio_to_gemini(self, provider, gemini_session, queue) -> None:
-        while self._stream_active:
-            pcm = await queue.get()
-            if pcm is None:
+        while True:
+            frame = await queue.get()
+            if frame is None:
                 return
-            await provider.send_audio(gemini_session, pcm)
+            queue_wait_ms = max(0.0, (time.monotonic() - frame.received_monotonic) * 1000)
+            started = time.monotonic()
+            await provider.send_audio(gemini_session, frame.pcm)
+            send_ms = (time.monotonic() - started) * 1000
+            self.voice_metrics["media_frames_sent_to_gemini"] += 1
+            self.voice_metrics["audio_sent_ms"] += frame.duration_ms
+            self.voice_metrics["queue_wait_ms_total"] += queue_wait_ms
+            self.voice_metrics["queue_wait_ms_max"] = max(
+                self.voice_metrics["queue_wait_ms_max"], queue_wait_ms
+            )
+            self.voice_metrics["gemini_send_ms_total"] += send_ms
+            self.voice_metrics["gemini_send_ms_max"] = max(
+                self.voice_metrics["gemini_send_ms_max"], send_ms
+            )
 
     async def _receive_gemini(self, provider, gemini_session, tools) -> None:
         async for event in provider.events(gemini_session):
             if event.kind == "input_transcript":
-                self._input_transcript = _merge_transcript_chunk(self._input_transcript, event.value)
+                raw_text = str(event.value or "")
+                self._input_transcript_events.append(raw_text)
+                self._store_transcript_event(
+                    event.kind, speaker="caller", raw_text=raw_text,
+                    details=event.details, received_at=event.received_at,
+                )
+            elif event.kind == "input_transcript_interim":
+                self._store_transcript_event(
+                    event.kind, speaker="caller", raw_text=str(event.value or ""),
+                    details=event.details, received_at=event.received_at,
+                )
             elif event.kind == "output_transcript":
-                self._output_transcript = _merge_transcript_chunk(self._output_transcript, event.value)
+                raw_text = str(event.value or "")
+                self._output_transcript_events.append(raw_text)
+                self._store_transcript_event(
+                    event.kind, speaker="assistant", raw_text=raw_text,
+                    details=event.details, received_at=event.received_at,
+                )
             elif event.kind == "audio":
                 self._flush_customer_transcript()
                 audio_data = event.value
@@ -306,18 +515,34 @@ class TwilioGeminiBridge:
                 self._turn_had_audio = True
                 self.session.response_playing = True
             elif event.kind == "interrupted":
+                self._store_transcript_event(event.kind, details=event.details, received_at=event.received_at)
                 await self._handle_interruption()
             elif event.kind == "tool_call":
+                self._store_transcript_event(
+                    event.kind,
+                    details={"count": len(event.value or []), "names": [getattr(call, "name", "") for call in (event.value or [])][:10]},
+                    received_at=event.received_at,
+                )
                 self._flush_customer_transcript()
                 await self._handle_tool_call(gemini_session, tools, event.value)
+            elif event.kind in {"go_away", "session_resumption_update", "tool_call_cancellation"}:
+                self._store_transcript_event(event.kind, details=event.details, received_at=event.received_at)
+                if event.kind == "go_away":
+                    self.voice_metrics["gemini_go_away_count"] = self.voice_metrics.get("gemini_go_away_count", 0) + 1
+                elif event.kind == "tool_call_cancellation":
+                    self.voice_metrics["tool_call_cancellation_count"] = self.voice_metrics.get("tool_call_cancellation_count", 0) + 1
+                    self._record_error("gemini_tool_call_cancelled")
+                else:
+                    self.voice_metrics["session_resumption_updates"] = self.voice_metrics.get("session_resumption_updates", 0) + 1
             elif event.kind == "turn_complete":
+                self._store_transcript_event(event.kind, details=event.details, received_at=event.received_at)
                 await self._complete_turn()
 
     async def _handle_interruption(self) -> None:
-        interrupted_text = self._output_transcript.strip()
+        interrupted_text = _join_transcript_pieces(self._output_transcript_events).strip()
         if interrupted_text:
             self._conversation_lines.append(f"Asistente (interrumpido): {interrupted_text}")
-        self._output_transcript = ""
+        self._output_transcript_events = []
         self.audio.reset_output()
         self.session.pending_marks.clear()
         self.session.response_playing = False
@@ -330,11 +555,11 @@ class TwilioGeminiBridge:
             await self.twilio.send_media(chunk, self.session.stream_sid)
             self._turn_had_audio = True
 
-        assistant_text = self._output_transcript.strip()
+        assistant_text = _join_transcript_pieces(self._output_transcript_events).strip()
         if assistant_text:
             self._assistant_turns.append(assistant_text)
             self._conversation_lines.append(f"Asistente: {assistant_text}")
-        self._output_transcript = ""
+        self._output_transcript_events = []
 
         if self._turn_had_audio:
             self._mark_counter += 1
@@ -343,7 +568,9 @@ class TwilioGeminiBridge:
             await self.twilio.send_mark(mark_name, self.session.stream_sid)
         self._turn_had_audio = False
         self._persist_conversation_snapshot()
+        self._save_voice_metrics()
         db.session.commit()
+        self._pending_transcript_events = 0
         if self.session.hangup_after_response and not self.session.pending_marks:
             await self._hangup_after_response()
 
@@ -374,10 +601,13 @@ class TwilioGeminiBridge:
         await gemini_session.send_tool_response(function_responses=function_responses)
 
     def _flush_customer_transcript(self) -> None:
-        customer_text = self._input_transcript.strip()
-        if customer_text:
-            self._conversation_lines.append(f"Cliente: {customer_text}")
-        self._input_transcript = ""
+        for raw_text in self._input_transcript_events:
+            customer_text = " ".join(str(raw_text or "").split()).strip()
+            if customer_text:
+                # Every final provider event stays visible, including repeated
+                # words or identical events; no overlap heuristic deletes them.
+                self._conversation_lines.append(f"Cliente: {customer_text}")
+        self._input_transcript_events = []
 
     def _build_call_summary(self) -> str | None:
         if not self._conversation_lines:
@@ -409,11 +639,12 @@ class TwilioGeminiBridge:
         if not self.call_log:
             return
         self._flush_customer_transcript()
-        assistant_text = self._output_transcript.strip()
+        assistant_text = _join_transcript_pieces(self._output_transcript_events).strip()
         if assistant_text:
             self._assistant_turns.append(assistant_text)
             self._conversation_lines.append(f"Asistente: {assistant_text}")
         self._persist_conversation_snapshot()
+        self._save_voice_metrics()
 
         if self.session and self.session.transfer_requested:
             self.call_log.session_state = "transferred"
@@ -494,7 +725,10 @@ def update_call_status_from_twilio() -> tuple[dict[str, Any], int]:
     if not item:
         return {"updated": False, "reason": "call_log_not_found"}, 404
 
-    item.status = map_twilio_call_status(form_data.get("CallStatus"))
+    provider_status = map_twilio_call_status(form_data.get("CallStatus"))
+    # A completed telephone leg does not erase a failure in the Gemini bridge.
+    if not (item.status == CallStatus.FAILED and provider_status == CallStatus.COMPLETED):
+        item.status = provider_status
     if form_data.get("CallDuration"):
         try:
             item.duration_seconds = int(form_data["CallDuration"])

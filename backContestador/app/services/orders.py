@@ -199,6 +199,11 @@ def quote_voice_order(*, business, cart, checkout):
         if len(modifier_map) != len(modifier_ids):
             raise OrderValidationError(f"Hay modificadores inválidos para {product.name}.")
         choice_groups = set()
+        required_groups = {
+            modifier.group_name
+            for modifier in product.modifiers
+            if modifier.is_active and modifier.action == "choice" and modifier.is_required
+        }
         for modifier in modifier_map.values():
             if modifier.action != "choice":
                 continue
@@ -207,6 +212,11 @@ def quote_voice_order(*, business, cart, checkout):
                     f"Sólo puedes elegir una opción de {modifier.group_name} para {product.name}."
                 )
             choice_groups.add(modifier.group_name)
+        missing_groups = sorted(required_groups - choice_groups)
+        if missing_groups:
+            raise OrderValidationError(
+                f"Elige una opción de {', '.join(missing_groups)} para {product.name}."
+            )
 
         modifiers = [
             {
@@ -279,6 +289,7 @@ def quote_voice_order(*, business, cart, checkout):
         "cash_change_for": f"{cash_change_for:.2f}" if cash_change_for is not None else None,
         "change_due": f"{change_due:.2f}" if change_due is not None else None,
         "delivery_address": delivery_address,
+        "delivery_address_components": dict(checkout.get("delivery_address_components") or {}),
         "notes": notes,
         "subtotal": f"{subtotal:.2f}",
         "discount": f"{discount:.2f}",
@@ -337,6 +348,7 @@ def create_order_from_quote(
         delivery_fee=_to_decimal(quote["delivery_fee"]),
         total=_to_decimal(quote["total"]),
         delivery_address=quote.get("delivery_address"),
+        **(quote.get("delivery_address_components") or {}),
         notes=quote.get("notes"),
         payment_method=PaymentMethod(quote["payment_method"]),
         cash_change_for=_to_decimal(quote.get("cash_change_for")) if quote.get("cash_change_for") is not None else None,

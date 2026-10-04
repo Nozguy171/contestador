@@ -20,7 +20,8 @@ class Config:
     TWILIO_VALIDATE_SIGNATURE = os.getenv("TWILIO_VALIDATE_SIGNATURE", "false").lower() == "true"
     TWILIO_STATUS_CALLBACK_URL = os.getenv("TWILIO_STATUS_CALLBACK_URL", "")
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-    GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
+    GEMINI_MODEL = os.getenv("GEMINI_MODEL", os.getenv("VOICE_LIVE_MODEL", "gemini-3.8-live"))
+    VOICE_LIVE_MODEL = os.getenv("VOICE_LIVE_MODEL", GEMINI_MODEL)
     GEMINI_HTTP_API_VERSION = os.getenv("GEMINI_HTTP_API_VERSION", "v1beta")
     GEMINI_VOICE_NAME = os.getenv("GEMINI_VOICE_NAME", "Aoede")
     GEMINI_LANGUAGE_CODE = os.getenv("GEMINI_LANGUAGE_CODE", "es-MX")
@@ -32,6 +33,8 @@ class Config:
     VOICE_END_OF_SPEECH_SENSITIVITY = os.getenv("VOICE_END_OF_SPEECH_SENSITIVITY", "END_SENSITIVITY_LOW")
     VOICE_PREFIX_PADDING_MS = int(os.getenv("VOICE_PREFIX_PADDING_MS", "120"))
     VOICE_SILENCE_DURATION_MS = int(os.getenv("VOICE_SILENCE_DURATION_MS", "700"))
+    VOICE_TRANSCRIPT_EVENTS_V2 = os.getenv("VOICE_TRANSCRIPT_EVENTS_V2", "false").lower() == "true"
+    VOICE_AUDIO_DIAGNOSTICS = os.getenv("VOICE_AUDIO_DIAGNOSTICS", "true").lower() == "true"
     UPLOAD_FOLDER = os.getenv(
         "UPLOAD_FOLDER",
         os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads"),

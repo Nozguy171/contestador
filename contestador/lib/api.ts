@@ -252,9 +252,11 @@ type BackendCall = {
   ai_summary?: string | null
   confidence?: string | number | null
   error_flags: Array<{ flag: string }>
-  tool_calls: Array<{ tool_name: string }>
+  tool_calls: Array<{ tool_name: string; payload?: unknown }>
   session_state: "connecting" | "active" | "order_submitted" | "transferring" | "transferred" | "ended"
   transfer_requested: boolean
+  gemini_model?: string | null
+  voice_metrics?: Record<string, unknown>
   draft_cart?: {
     revision?: number
     unavailable_items?: string[]
@@ -311,12 +313,14 @@ type BackendProduct = {
   image_url?: string | null
   is_active: boolean
   is_sold_out: boolean
+  aliases?: string[]
   modifiers?: Array<{
     id: number
     name: string
     price: string | number
     group_name?: string
     action?: "choice" | "add" | "remove"
+    is_required?: boolean
   }>
   ingredients?: Array<{
     id: number
@@ -336,6 +340,14 @@ type BackendBusiness = {
   human_transfer_number?: string | null
   email?: string | null
   estimated_delivery_time?: string | null
+  country_code?: string | null
+  state_code?: string | null
+  state_name?: string | null
+  municipality_code?: string | null
+  municipality_name?: string | null
+  locality_code?: string | null
+  locality_name?: string | null
+  geo_catalog_version_id?: number | null
 }
 
 type BackendBusinessHour = {
@@ -361,6 +373,30 @@ type BackendBusinessSetting = {
   voice_name: string
   insights_enabled: boolean
   timezone: string
+  voice_address_mode: "off" | "shadow" | "candidate" | "enforce"
+  voice_menu_v2_enabled: boolean
+}
+
+export type AddressCatalogVersion = {
+  id: number
+  source: string
+  edition: string
+  entity_code: string
+  entity_name?: string | null
+  municipality_code: string
+  municipality_name?: string | null
+  checksum_sha256: string
+  imported_at: string
+}
+
+export type AddressLocality = { code: string; name: string }
+export type AddressSettlement = { key: string; name: string; type?: string | null }
+export type DeliveryZone = {
+  id: number
+  name: string
+  settlement_names: string[]
+  settlement_keys: string[]
+  is_active: boolean
 }
 
 type BackendFAQ = {
@@ -508,10 +544,14 @@ function mapCall(call: BackendCall) {
     transcript: call.transcript ?? undefined,
     aiSummary: call.ai_summary ?? undefined,
     errorFlags: call.error_flags?.map((flag) => flag.flag) ?? [],
-    confidence: toNumber(call.confidence),
+    confidence: call.confidence == null ? null : toNumber(call.confidence),
     toolCalls: call.tool_calls?.map((tool) => tool.tool_name) ?? [],
     sessionState: call.session_state ?? "ended",
     transferRequested: call.transfer_requested ?? false,
+    voiceDiagnostics: {
+      model: call.gemini_model ?? undefined,
+      metrics: call.voice_metrics ?? {},
+    },
     draftCart: call.draft_cart
       ? {
           revision: call.draft_cart.revision ?? 0,
@@ -569,6 +609,7 @@ function mapProduct(
     price: toNumber(product.price),
     isActive: product.is_active,
     isSoldOut: product.is_sold_out,
+    aliases: product.aliases ?? [],
     imageUrl: product.image_url ?? undefined,
     modifiers: product.modifiers?.map((modifier) => ({
       id: String(modifier.id),
@@ -576,6 +617,7 @@ function mapProduct(
       price: toNumber(modifier.price),
       groupName: modifier.group_name ?? "Personalización",
       action: modifier.action ?? "choice",
+      isRequired: modifier.is_required ?? false,
     })) ?? [],
     ingredients: product.ingredients?.map((ingredient) => ({
       id: String(ingredient.id),
@@ -720,6 +762,14 @@ export function getStoredBusinesses() {
   } catch {
     return []
   }
+}
+
+export function canReviewVoiceEvents() {
+  const businessId = getStoredValue(STORAGE_KEYS.businessId)
+  const business = getStoredBusinesses().find((item: { id?: number | string }) => String(item.id) === String(businessId)) as
+    | { role?: string }
+    | undefined
+  return ["owner", "admin", "manager"].includes(business?.role ?? "")
 }
 
 export function getStoredToken() {
@@ -868,18 +918,45 @@ export async function updateOrderStatus(orderId: string, status: string) {
   return mapOrder(response.data)
 }
 
-export async function listCalls(params?: { status?: string; phoneNumber?: string }) {
+export async function listCallPage(params?: {
+  status?: string
+  phoneNumber?: string
+  limit?: number
+  offset?: number
+}) {
   const searchParams = new URLSearchParams()
   if (params?.status && params.status !== "all") searchParams.set("status", params.status)
   if (params?.phoneNumber) searchParams.set("phone_number", params.phoneNumber)
+  if (params?.limit !== undefined) searchParams.set("limit", String(params.limit))
+  if (params?.offset !== undefined) searchParams.set("offset", String(params.offset))
 
   const suffix = searchParams.toString() ? `?${searchParams.toString()}` : ""
-  const response = await apiFetch<{ data: BackendCall[] }>(`/api/v1/calls${suffix}`, {
+  const response = await apiFetch<{ data: { items: BackendCall[]; total: number } }>(`/api/v1/calls${suffix}`, {
     method: "GET",
     auth: true,
   })
 
-  return response.data.map(mapCall)
+  return { items: response.data.items.map(mapCall), total: response.data.total }
+}
+
+export async function listCalls(params?: { status?: string; phoneNumber?: string }) {
+  return (await listCallPage(params)).items
+}
+
+export async function getVoiceCallEvents(callId: string) {
+  const response = await apiFetch<{
+    data: {
+      model?: string | null
+      metrics: Record<string, unknown>
+      transcript_events: import("./types").CallVoiceEvent[]
+      total_events: number
+      truncated: boolean
+    }
+  }>("/api/v1/calls/" + callId + "/voice-events", {
+    method: "GET",
+    auth: true,
+  })
+  return response.data
 }
 
 export async function getVoiceRuntime() {
@@ -945,6 +1022,7 @@ export async function createProduct(payload: {
   price: number
   isActive: boolean
   isSoldOut: boolean
+  aliases?: string[]
   imageUrl?: string
   ingredients?: Array<{ inventoryItemId: string; quantity: number }>
   modifiers?: Array<{
@@ -952,6 +1030,7 @@ export async function createProduct(payload: {
     price: number
     groupName: string
     action: "choice" | "add" | "remove"
+    isRequired?: boolean
   }>
 }) {
   await apiFetch("/api/v1/menu/products", {
@@ -964,6 +1043,7 @@ export async function createProduct(payload: {
       price: payload.price,
       is_active: payload.isActive,
       is_sold_out: payload.isSoldOut,
+      aliases: payload.aliases,
       image_url: payload.imageUrl,
       ingredients: payload.ingredients?.map((ingredient) => ({
         inventory_item_id: Number(ingredient.inventoryItemId),
@@ -974,6 +1054,7 @@ export async function createProduct(payload: {
         price: modifier.price,
         group_name: modifier.groupName,
         action: modifier.action,
+        is_required: modifier.isRequired,
       })),
     }),
   })
@@ -986,6 +1067,7 @@ export async function updateProduct(productId: string, payload: {
   price: number
   isActive: boolean
   isSoldOut: boolean
+  aliases?: string[]
   imageUrl?: string
   ingredients?: Array<{ inventoryItemId: string; quantity: number }>
   modifiers?: Array<{
@@ -993,6 +1075,7 @@ export async function updateProduct(productId: string, payload: {
     price: number
     groupName: string
     action: "choice" | "add" | "remove"
+    isRequired?: boolean
   }>
 }) {
   const body = {
@@ -1003,6 +1086,7 @@ export async function updateProduct(productId: string, payload: {
     is_active: payload.isActive,
     is_sold_out: payload.isSoldOut,
     image_url: payload.imageUrl,
+    aliases: payload.aliases,
     ...(payload.ingredients
       ? {
           ingredients: payload.ingredients.map((ingredient) => ({
@@ -1011,15 +1095,16 @@ export async function updateProduct(productId: string, payload: {
           })),
         }
       : {}),
-    ...(payload.modifiers
-      ? {
-          modifiers: payload.modifiers.map((modifier) => ({
-            name: modifier.name,
-            price: modifier.price,
-            group_name: modifier.groupName,
-            action: modifier.action,
-          })),
-        }
+        ...(payload.modifiers
+          ? {
+            modifiers: payload.modifiers.map((modifier) => ({
+              name: modifier.name,
+              price: modifier.price,
+              group_name: modifier.groupName,
+              action: modifier.action,
+              is_required: modifier.isRequired,
+            })),
+          }
       : {}),
   }
 
@@ -1233,6 +1318,52 @@ export async function updateBusinessSettings(payload: Partial<BackendBusinessSet
   return response.data
 }
 
+export async function listAddressCatalogs() {
+  const response = await apiFetch<{ data: AddressCatalogVersion[] }>(
+    "/api/v1/businesses/current/address-catalogs",
+    { method: "GET", auth: true }
+  )
+  return response.data
+}
+
+export async function listAddressCatalogLocalities(versionId: string | number) {
+  const response = await apiFetch<{ data: AddressLocality[] }>(
+    `/api/v1/businesses/current/address-catalogs/${versionId}/localities`,
+    { method: "GET", auth: true }
+  )
+  return response.data
+}
+
+export async function listAddressCatalogSettlements(versionId: string | number, localityCode: string) {
+  const params = new URLSearchParams({ locality_code: localityCode })
+  const response = await apiFetch<{ data: AddressSettlement[] }>(
+    `/api/v1/businesses/current/address-catalogs/${versionId}/settlements?${params}`,
+    { method: "GET", auth: true }
+  )
+  return response.data
+}
+
+export async function updateBusinessLocation(payload: {
+  geo_catalog_version_id: number | null
+  locality_code?: string | null
+}) {
+  const response = await apiFetch<{ data: Pick<BackendBusiness,
+    | "country_code"
+    | "state_code"
+    | "state_name"
+    | "municipality_code"
+    | "municipality_name"
+    | "locality_code"
+    | "locality_name"
+    | "geo_catalog_version_id"
+  > }>("/api/v1/businesses/current/location", {
+    method: "PUT",
+    auth: true,
+    body: JSON.stringify(payload),
+  })
+  return response.data
+}
+
 export async function getVoicePreview(voiceName: string) {
   const token = getStoredValue(STORAGE_KEYS.token)
   if (!token) throw new ApiError("Tu sesión expiró. Vuelve a iniciar sesión.", 401)
@@ -1274,7 +1405,7 @@ export async function replaceBusinessHours(hours: BackendBusinessHour[]) {
 }
 
 export async function listDeliveryZones() {
-  const response = await apiFetch<{ data: Array<{ id: number; name: string }> }>("/api/v1/businesses/current/delivery-zones", {
+  const response = await apiFetch<{ data: DeliveryZone[] }>("/api/v1/businesses/current/delivery-zones", {
     method: "GET",
     auth: true,
   })
@@ -1283,12 +1414,26 @@ export async function listDeliveryZones() {
 }
 
 export async function createDeliveryZone(name: string) {
-  const response = await apiFetch<{ data: { id: number; name: string } }>("/api/v1/businesses/current/delivery-zones", {
+  const response = await apiFetch<{ data: DeliveryZone }>("/api/v1/businesses/current/delivery-zones", {
     method: "POST",
     auth: true,
     body: JSON.stringify({ name }),
   })
 
+  return response.data
+}
+
+export async function updateDeliveryZone(zoneId: string | number, payload: {
+  settlement_names?: string[]
+  settlement_keys?: string[]
+  name?: string
+  is_active?: boolean
+}) {
+  const response = await apiFetch<{ data: DeliveryZone }>(`/api/v1/businesses/current/delivery-zones/${zoneId}`, {
+    method: "PUT",
+    auth: true,
+    body: JSON.stringify(payload),
+  })
   return response.data
 }
 

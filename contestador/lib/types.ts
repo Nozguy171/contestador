@@ -92,11 +92,26 @@ export interface CallLog {
   transcript?: string
   aiSummary?: string
   errorFlags?: string[]
-  confidence: number
+  confidence: number | null
   toolCalls?: string[]
   sessionState: "connecting" | "active" | "order_submitted" | "transferring" | "transferred" | "ended"
   draftCart?: DraftCart
   transferRequested: boolean
+  voiceDiagnostics?: {
+    model?: string
+    metrics: Record<string, unknown>
+  }
+}
+
+export interface CallVoiceEvent {
+  id: number
+  receive_sequence: number
+  event_type: string
+  speaker?: string | null
+  model?: string | null
+  raw_text?: string | null
+  received_at: string
+  details: Record<string, unknown>
 }
 
 export interface Product {
@@ -108,6 +123,7 @@ export interface Product {
   price: number
   isActive: boolean
   isSoldOut: boolean
+  aliases?: string[]
   modifiers?: ProductModifier[]
   imageUrl?: string
   ingredients?: ProductIngredient[]
@@ -119,6 +135,7 @@ export interface ProductModifier {
   price: number
   groupName: string
   action: "choice" | "add" | "remove"
+  isRequired?: boolean
 }
 
 export interface ProductIngredient {

@@ -33,6 +33,7 @@ class Product(TimestampMixin, SerializerMixin, db.Model):
     image_url = db.Column(db.Text, nullable=True)
     is_active = db.Column(db.Boolean, nullable=False, default=True, server_default=db.true())
     is_sold_out = db.Column(db.Boolean, nullable=False, default=False, server_default=db.false())
+    aliases = db.Column(JSON_VARIANT, nullable=False, default=list, server_default="[]")
 
     business = db.relationship("Business", back_populates="products")
     category = db.relationship("Category", back_populates="products")
@@ -62,6 +63,7 @@ class ProductModifier(db.Model, SerializerMixin):
     price = db.Column(db.Numeric(10, 2), nullable=False, default=0, server_default="0")
     is_active = db.Column(db.Boolean, nullable=False, default=True, server_default=db.true())
     sort_order = db.Column(db.Integer, nullable=False, default=0, server_default="0")
+    is_required = db.Column(db.Boolean, nullable=False, default=False, server_default=db.false())
 
     product = db.relationship("Product", back_populates="modifiers")
 

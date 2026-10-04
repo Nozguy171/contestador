@@ -105,6 +105,7 @@ export default function MenuPage() {
       price: productData.price || 0,
       isActive: productData.isActive ?? true,
       isSoldOut: productData.isSoldOut ?? false,
+      aliases: (productData.aliases ?? []).map((alias) => alias.trim()).filter(Boolean),
       imageUrl: productData.imageUrl,
       ingredients: (productData.ingredients ?? []).map((ingredient) => ({
         inventoryItemId: ingredient.inventoryItemId,
@@ -117,6 +118,7 @@ export default function MenuPage() {
           price: modifier.action === "remove" ? 0 : modifier.price,
           groupName: modifier.groupName.trim() || "Personalización",
           action: modifier.action,
+          isRequired: modifier.action === "choice" && modifier.isRequired === true,
         })),
     }
 

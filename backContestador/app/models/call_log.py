@@ -26,6 +26,8 @@ class CallLog(TimestampMixin, SerializerMixin, db.Model):
     session_state = db.Column(db.String(32), nullable=False, default="ended", server_default="ended")
     draft_cart = db.Column(JSON_VARIANT, nullable=False, default=dict)
     transfer_requested = db.Column(db.Boolean, nullable=False, default=False, server_default=db.false())
+    voice_metrics = db.Column(JSON_VARIANT, nullable=False, default=dict, server_default="{}")
+    gemini_model = db.Column(db.String(120), nullable=True)
 
     business = db.relationship("Business", back_populates="call_logs")
     customer = db.relationship("Customer", back_populates="call_logs")
@@ -60,3 +62,24 @@ class CallLogToolCall(db.Model, SerializerMixin):
     created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now(), nullable=False)
 
     call_log = db.relationship("CallLog", back_populates="tool_calls")
+
+
+class CallLogTranscriptEvent(db.Model, SerializerMixin):
+    __tablename__ = "call_log_transcript_events"
+
+    id = db.Column(db.Integer, primary_key=True)
+    call_log_id = db.Column(db.Integer, db.ForeignKey("call_logs.id", ondelete="CASCADE"), nullable=False)
+    receive_sequence = db.Column(db.Integer, nullable=False)
+    event_type = db.Column(db.String(40), nullable=False)
+    speaker = db.Column(db.String(16), nullable=True)
+    provider = db.Column(db.String(24), nullable=False, default="gemini_live", server_default="gemini_live")
+    model = db.Column(db.String(120), nullable=True)
+    raw_text = db.Column(db.Text, nullable=True)
+    received_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now(), nullable=False)
+    details = db.Column(JSON_VARIANT, nullable=False, default=dict, server_default="{}")
+
+    call_log = db.relationship("CallLog", backref=db.backref("transcript_events", cascade="all, delete-orphan", order_by="CallLogTranscriptEvent.receive_sequence"))
+
+    __table_args__ = (
+        db.UniqueConstraint("call_log_id", "receive_sequence", name="uq_call_transcript_event_sequence"),
+    )

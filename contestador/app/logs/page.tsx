@@ -32,8 +32,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { listCalls } from "@/lib/api"
-import type { CallLog } from "@/lib/types"
+import { canReviewVoiceEvents, getVoiceCallEvents, listCallPage } from "@/lib/api"
+import type { CallLog, CallVoiceEvent } from "@/lib/types"
 import {
   Activity,
   AlertTriangle,
@@ -75,14 +75,23 @@ function formatErrorFlag(flag: string) {
   return flag.replaceAll("_", " ")
 }
 
+const CALLS_PAGE_SIZE = 100
+
 export default function LogsPage() {
   const [logs, setLogs] = useState<CallLog[]>([])
+  const [callsTotal, setCallsTotal] = useState(0)
   const [searchQuery, setSearchQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState<string>("all")
   const [selectedLog, setSelectedLog] = useState<CallLog | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
+  const [isLoadingMore, setIsLoadingMore] = useState(false)
   const [errorMessage, setErrorMessage] = useState("")
+  const [voiceEvents, setVoiceEvents] = useState<CallVoiceEvent[]>([])
+  const [voiceEventsTruncated, setVoiceEventsTruncated] = useState(false)
+  const [canReviewEvents, setCanReviewEvents] = useState(false)
+  const [eventsLoading, setEventsLoading] = useState(false)
+  const [eventsError, setEventsError] = useState("")
 
   useEffect(() => {
     let active = true
@@ -92,11 +101,16 @@ export default function LogsPage() {
       try {
         if (firstLoad) setIsLoading(true)
         setErrorMessage("")
-        const data = await listCalls()
+        const page = await listCallPage({ limit: CALLS_PAGE_SIZE, offset: 0 })
         if (active) {
-          setLogs(data)
+          setCallsTotal(page.total)
+          setLogs((current) => {
+            const recentIds = new Set(page.items.map((item) => item.id))
+            const olderLoadedCalls = current.filter((item) => !recentIds.has(item.id))
+            return [...page.items, ...olderLoadedCalls].slice(0, page.total)
+          })
           setSelectedLog((current) =>
-            current ? data.find((item) => item.id === current.id) ?? current : null
+            current ? page.items.find((item) => item.id === current.id) ?? current : null
           )
         }
       } catch (error) {
@@ -117,6 +131,64 @@ export default function LogsPage() {
     }
   }, [])
 
+  async function loadMoreCalls() {
+    if (isLoadingMore || logs.length >= callsTotal) return
+    setIsLoadingMore(true)
+    setErrorMessage("")
+    try {
+      const page = await listCallPage({ limit: CALLS_PAGE_SIZE, offset: logs.length })
+      setCallsTotal(page.total)
+      setLogs((current) => {
+        const existingIds = new Set(current.map((item) => item.id))
+        return [...current, ...page.items.filter((item) => !existingIds.has(item.id))]
+      })
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "No se pudieron cargar más llamadas.")
+    } finally {
+      setIsLoadingMore(false)
+    }
+  }
+
+  useEffect(() => {
+    setCanReviewEvents(canReviewVoiceEvents())
+  }, [])
+
+  useEffect(() => {
+    if (!drawerOpen || !selectedLog) {
+      setVoiceEvents([])
+      setVoiceEventsTruncated(false)
+      setEventsError("")
+      return
+    }
+    if (!canReviewEvents) {
+      setVoiceEvents([])
+      setVoiceEventsTruncated(false)
+      setEventsError("")
+      return
+    }
+    let active = true
+    setEventsLoading(true)
+    setEventsError("")
+    void getVoiceCallEvents(selectedLog.id)
+      .then((result) => {
+        if (active) {
+          setVoiceEvents(result.transcript_events)
+          setVoiceEventsTruncated(result.truncated)
+        }
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setEventsError(error instanceof Error ? error.message : "No se pudieron cargar los eventos de voz.")
+        }
+      })
+      .finally(() => {
+        if (active) setEventsLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [drawerOpen, selectedLog?.id, canReviewEvents])
+
   const filteredLogs = useMemo(() => {
     return logs.filter((log) => {
       const matchesSearch = searchQuery === "" || log.phoneNumber.includes(searchQuery)
@@ -129,7 +201,7 @@ export default function LogsPage() {
     const total = logs.length
     const converted = logs.filter((log) => log.resultedInOrder).length
     const avgDuration = total ? logs.reduce((sum, log) => sum + log.duration, 0) / total : 0
-    const confidentLogs = logs.filter((log) => log.confidence > 0)
+    const confidentLogs = logs.filter((log) => log.confidence !== null)
     const avgConfidence = confidentLogs.length
       ? confidentLogs.reduce((sum, log) => sum + log.confidence, 0) / confidentLogs.length
       : 0
@@ -139,6 +211,7 @@ export default function LogsPage() {
       converted,
       avgDuration,
       avgConfidence,
+      hasConfidence: confidentLogs.length > 0,
     }
   }, [logs])
 
@@ -158,7 +231,7 @@ export default function LogsPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-xs text-muted-foreground">Llamadas totales</p>
-                  <p className="text-2xl font-semibold">{stats.total}</p>
+                  <p className="text-2xl font-semibold">{callsTotal}</p>
                 </div>
                 <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50">
                   <Phone className="h-5 w-5 text-blue-600" />
@@ -171,7 +244,7 @@ export default function LogsPage() {
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-xs text-muted-foreground">Conversión a pedido</p>
+                  <p className="text-xs text-muted-foreground">Conversión de cargadas</p>
                   <p className="text-2xl font-semibold">
                     {stats.total ? Math.round((stats.converted / stats.total) * 100) : 0}%
                   </p>
@@ -187,7 +260,7 @@ export default function LogsPage() {
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-xs text-muted-foreground">Duración promedio</p>
+                  <p className="text-xs text-muted-foreground">Duración prom. cargadas</p>
                   <p className="text-2xl font-semibold">{formatDuration(Math.round(stats.avgDuration))}</p>
                 </div>
                 <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-50">
@@ -201,8 +274,10 @@ export default function LogsPage() {
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-xs text-muted-foreground">Confianza promedio</p>
-                  <p className="text-2xl font-semibold">{Math.round(stats.avgConfidence * 100)}%</p>
+                  <p className="text-xs text-muted-foreground">Confianza prom. cargadas</p>
+                  <p className="text-2xl font-semibold">
+                    {stats.hasConfidence ? `${Math.round(stats.avgConfidence * 100)}%` : "Sin medición"}
+                  </p>
                 </div>
                 <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-50">
                   <Activity className="h-5 w-5 text-violet-600" />
@@ -237,6 +312,11 @@ export default function LogsPage() {
             </SelectContent>
           </Select>
         </div>
+
+        <p className="text-xs text-muted-foreground">
+          Mostrando {logs.length} de {callsTotal} llamadas. La búsqueda y las métricas de conversión,
+          duración y confianza usan las llamadas cargadas.
+        </p>
 
         {errorMessage ? (
           <Card className="border-red-200 bg-red-50">
@@ -284,7 +364,7 @@ export default function LogsPage() {
                       <p className="text-xs text-muted-foreground">Duración</p>
                     </div>
                     <div className="min-w-0">
-                      <p className="font-semibold">{Math.round(log.confidence * 100)}%</p>
+                      <p className="font-semibold">{log.confidence === null ? "—" : `${Math.round(log.confidence * 100)}%`}</p>
                       <p className="text-xs text-muted-foreground">Confianza</p>
                     </div>
                     <div className="min-w-0">
@@ -383,12 +463,16 @@ export default function LogsPage() {
                         )}
                       </TableCell>
                       <TableCell>
-                        <div className="flex items-center gap-2">
-                          <Progress value={log.confidence * 100} className="h-2 w-16" />
-                          <span className="text-xs text-muted-foreground">
-                            {Math.round(log.confidence * 100)}%
-                          </span>
-                        </div>
+                        {log.confidence === null ? (
+                          <span className="text-xs text-muted-foreground">Sin medición</span>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <Progress value={log.confidence * 100} className="h-2 w-16" />
+                            <span className="text-xs text-muted-foreground">
+                              {Math.round(log.confidence * 100)}%
+                            </span>
+                          </div>
+                        )}
                       </TableCell>
                       <TableCell>
                         {log.errorFlags?.length ? (
@@ -422,6 +506,14 @@ export default function LogsPage() {
             </Table>
           </CardContent>
         </Card>
+
+        {logs.length < callsTotal ? (
+          <div className="flex justify-center">
+            <Button variant="outline" className="rounded-xl" onClick={() => void loadMoreCalls()} disabled={isLoadingMore}>
+              {isLoadingMore ? "Cargando llamadas…" : "Cargar más llamadas"}
+            </Button>
+          </div>
+        ) : null}
       </div>
 
       <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
@@ -466,7 +558,9 @@ export default function LogsPage() {
                       <p className="text-xs text-muted-foreground">Duración</p>
                     </div>
                     <div className="min-w-0 rounded-xl bg-secondary/50 p-3 text-center sm:p-4">
-                      <p className="text-lg font-semibold">{Math.round(selectedLog.confidence * 100)}%</p>
+                      <p className="text-lg font-semibold">
+                        {selectedLog.confidence === null ? "Sin medición" : `${Math.round(selectedLog.confidence * 100)}%`}
+                      </p>
                       <p className="text-xs text-muted-foreground">Confianza</p>
                     </div>
                     <div className="min-w-0 rounded-xl bg-secondary/50 p-3 text-center sm:p-4">
@@ -599,6 +693,69 @@ export default function LogsPage() {
                       </CardContent>
                     </Card>
                   ) : null}
+
+                  <Card className="border-border">
+                    <CardHeader className="pb-3">
+                      <CardTitle className="flex items-center gap-2 text-sm font-medium">
+                        <Activity className="h-4 w-4" />
+                        Diagnóstico de Gemini Live
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3 pt-0">
+                      <p className="text-xs text-muted-foreground">
+                        Modelo: {selectedLog.voiceDiagnostics?.model || "sin registro"}
+                      </p>
+                      {(() => {
+                        const metrics = selectedLog.voiceDiagnostics?.metrics ?? {}
+                        const displayMetrics = [
+                          ["Frames recibidos", metrics.media_frames_received],
+                          ["Frames enviados", metrics.media_frames_sent_to_gemini],
+                          ["Audio perdido (ms)", metrics.audio_dropped_ms],
+                          ["Huecos de secuencia", metrics.sequence_gaps],
+                          ["Huecos de audio", metrics.media_chunk_gaps],
+                          ["Espera media en cola (ms)", metrics.queue_wait_ms_average],
+                          ["Eventos de transcript", metrics.transcript_events],
+                        ].filter(([, value]) => value !== undefined)
+                        return displayMetrics.length ? (
+                          <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
+                            {displayMetrics.map(([label, value]) => (
+                              <div key={String(label)} className="rounded-lg bg-secondary/40 p-2">
+                                <p className="text-muted-foreground">{label}</p>
+                                <p className="font-semibold">{String(value)}</p>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-muted-foreground">Esta llamada no tiene métricas de audio registradas.</p>
+                        )
+                      })()}
+                      {!canReviewEvents ? (
+                        <p className="text-xs text-muted-foreground">El transcript crudo está disponible para managers.</p>
+                      ) : eventsError ? <p className="text-xs text-destructive">{eventsError}</p> : null}
+                      {canReviewEvents && eventsLoading ? (
+                        <p className="text-xs text-muted-foreground">Cargando eventos…</p>
+                      ) : canReviewEvents && voiceEvents.length ? (
+                        <>
+                          {voiceEventsTruncated ? (
+                            <p className="text-xs text-amber-700">Vista limitada a los 1,000 eventos más recientes.</p>
+                          ) : null}
+                          <div className="max-h-80 space-y-2 overflow-y-auto rounded-lg border p-2">
+                            {voiceEvents.map((event) => (
+                              <div key={event.id} className="rounded-md bg-secondary/30 p-2 text-xs">
+                                <div className="flex flex-wrap items-center justify-between gap-2 text-muted-foreground">
+                                  <span>{event.receive_sequence}. {event.speaker || "sistema"} · {event.event_type}</span>
+                                  <span>{formatTime(event.received_at)}</span>
+                                </div>
+                                {event.raw_text ? <p className="mt-1 whitespace-pre-wrap break-words">{event.raw_text}</p> : null}
+                              </div>
+                            ))}
+                          </div>
+                        </>
+                      ) : canReviewEvents && !eventsError ? (
+                        <p className="text-xs text-muted-foreground">Sin eventos crudos de transcript para esta llamada.</p>
+                      ) : null}
+                    </CardContent>
+                  </Card>
 
                   <Card className="border-border">
                     <CardHeader className="pb-3">

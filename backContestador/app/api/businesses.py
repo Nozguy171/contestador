@@ -13,6 +13,9 @@ from app.models import (
     BusinessSetting,
     BusinessUser,
     FAQ,
+    GeoCatalogVersion,
+    GeoLocality,
+    GeoSettlement,
 )
 from app.models.enums import BusinessRole
 from app.services.promotions import (
@@ -54,6 +57,45 @@ def _twilio_number_is_available(phone_number, business_id=None):
         normalize_phone_number(item.twilio_phone_number) == phone_number
         for item in candidates.all()
     )
+
+
+def _normalize_settlement_names(values):
+    if values in (None, ""):
+        return []
+    if not isinstance(values, list):
+        return None
+    normalized = []
+    seen = set()
+    for raw in values:
+        name = " ".join(str(raw or "").split()).strip()
+        if not name:
+            continue
+        if len(name) > 200:
+            return None
+        key = " ".join(name.casefold().split())
+        if key not in seen:
+            seen.add(key)
+            normalized.append(name)
+    return normalized
+
+
+def _normalize_settlement_keys(values):
+    if values in (None, ""):
+        return []
+    if not isinstance(values, list):
+        return None
+    normalized = []
+    seen = set()
+    for raw in values:
+        key = str(raw or "").strip()
+        if not key:
+            continue
+        if len(key) > 32:
+            return None
+        if key not in seen:
+            seen.add(key)
+            normalized.append(key)
+    return normalized if len(normalized) <= 1000 else None
 
 
 @bp.get("")
@@ -183,6 +225,27 @@ def upsert_settings():
         settings = BusinessSetting(business_id=g.current_business.id)
         db.session.add(settings)
 
+    mode = data.get("voice_address_mode", getattr(settings, "voice_address_mode", None) or "off")
+    if not isinstance(mode, str) or mode not in {"off", "shadow", "candidate", "enforce"}:
+        return error("El modo de resolución de domicilios no es válido.", 400)
+    if mode in {"candidate", "enforce"}:
+        if not g.current_business.geo_catalog_version_id or not g.current_business.locality_code:
+            return error("Selecciona primero un catálogo geográfico y la localidad del negocio.", 400)
+    if mode == "enforce":
+        configured_keys = {
+            str(key)
+            for zone in g.current_business.delivery_zones
+            if zone.is_active
+            for key in (zone.settlement_keys or [])
+        }
+        valid_count = GeoSettlement.query.filter(
+            GeoSettlement.catalog_version_id == g.current_business.geo_catalog_version_id,
+            GeoSettlement.locality_code == g.current_business.locality_code,
+            GeoSettlement.source_key.in_(configured_keys or [""]),
+        ).count()
+        if not valid_count:
+            return error("Selecciona al menos un asentamiento del catálogo vigente en una zona antes de activar enforcement.", 400)
+
     for field in [
         "delivery_enabled",
         "minimum_order_delivery",
@@ -198,10 +261,19 @@ def upsert_settings():
         "voice_name",
         "insights_enabled",
         "timezone",
+        "voice_address_mode",
+        "voice_menu_v2_enabled",
     ]:
         if field in data:
             if field == "voice_name" and data[field] not in GEMINI_VOICE_NAMES:
                 return error("La voz seleccionada no es válida.", 400)
+            if field == "voice_menu_v2_enabled" and not isinstance(data[field], bool):
+                return error("La opción de menú conversacional debe ser booleana.", 400)
+            if field == "voice_address_mode" and (
+                not isinstance(data[field], str)
+                or data[field] not in {"off", "shadow", "candidate", "enforce"}
+            ):
+                return error("El modo de resolución de domicilios no es válido.", 400)
             if field == "timezone":
                 try:
                     ZoneInfo(str(data[field]))
@@ -211,6 +283,123 @@ def upsert_settings():
 
     db.session.commit()
     return success(settings.to_dict(), "Settings updated")
+
+
+@bp.get("/current/address-catalogs")
+@require_business()
+def list_address_catalogs():
+    versions = GeoCatalogVersion.query.order_by(
+        GeoCatalogVersion.entity_code,
+        GeoCatalogVersion.municipality_code,
+        GeoCatalogVersion.edition.desc(),
+    ).all()
+    return success([
+        {
+            "id": item.id,
+            "source": item.source,
+            "edition": item.edition,
+            "entity_code": item.entity_code,
+            "entity_name": item.entity_name,
+            "municipality_code": item.municipality_code,
+            "municipality_name": item.municipality_name,
+            "checksum_sha256": item.checksum_sha256,
+            "imported_at": item.imported_at,
+        }
+        for item in versions
+    ])
+
+
+@bp.get("/current/address-catalogs/<int:version_id>/localities")
+@require_business()
+def list_address_catalog_localities(version_id):
+    version = db.session.get(GeoCatalogVersion, version_id)
+    if not version:
+        return error("No encontramos esa versión del catálogo.", 404)
+    items = GeoLocality.query.filter_by(catalog_version_id=version.id).order_by(GeoLocality.name).all()
+    return success([{"code": item.locality_code, "name": item.name} for item in items])
+
+
+@bp.get("/current/address-catalogs/<int:version_id>/settlements")
+@require_business()
+def list_address_catalog_settlements(version_id):
+    version = db.session.get(GeoCatalogVersion, version_id)
+    locality_code = str(request.args.get("locality_code") or "").strip().zfill(4)
+    locality = GeoLocality.query.filter_by(
+        catalog_version_id=version_id,
+        locality_code=locality_code,
+    ).first()
+    if not version or not locality:
+        return error("El catálogo y la localidad seleccionados no coinciden.", 404)
+    items = GeoSettlement.query.filter_by(
+        catalog_version_id=version_id,
+        locality_code=locality_code,
+    ).order_by(GeoSettlement.name, GeoSettlement.source_key).all()
+    return success([
+        {
+            "key": item.source_key,
+            "name": item.name,
+            "type": item.settlement_type,
+        }
+        for item in items
+    ])
+
+
+@bp.put("/current/location")
+@require_business("manager")
+def update_business_location():
+    data = request.get_json(silent=True) or {}
+    raw_version_id = data.get("geo_catalog_version_id")
+    try:
+        version_id = int(raw_version_id) if raw_version_id not in (None, "") else None
+    except (TypeError, ValueError):
+        return error("La versión del catálogo no es válida.", 400)
+    locality_code = str(data.get("locality_code") or "").strip()
+    version = db.session.get(GeoCatalogVersion, version_id) if version_id else None
+    if version_id and not version:
+        return error("No encontramos esa versión del catálogo.", 400)
+    locality = (
+        GeoLocality.query.filter_by(
+            catalog_version_id=version.id,
+            locality_code=locality_code,
+        ).first()
+        if version and locality_code
+        else None
+    )
+    if locality_code and not locality:
+        return error("La localidad no pertenece a la versión seleccionada.", 400)
+    if version and not locality:
+        return error("Selecciona la localidad del negocio.", 400)
+
+    business = g.current_business
+    if version:
+        business.country_code = "MX"
+        business.state_code = version.entity_code
+        business.state_name = version.entity_name or str(data.get("state_name") or "").strip() or None
+        business.municipality_code = version.municipality_code
+        business.municipality_name = version.municipality_name or str(data.get("municipality_name") or "").strip() or None
+        business.locality_code = locality.locality_code
+        business.locality_name = locality.name
+        business.geo_catalog_version_id = version.id
+    else:
+        business.country_code = None
+        business.state_code = None
+        business.state_name = None
+        business.municipality_code = None
+        business.municipality_name = None
+        business.locality_code = None
+        business.locality_name = None
+        business.geo_catalog_version_id = None
+    db.session.commit()
+    return success({
+        "country_code": business.country_code,
+        "state_code": business.state_code,
+        "state_name": business.state_name,
+        "municipality_code": business.municipality_code,
+        "municipality_name": business.municipality_name,
+        "locality_code": business.locality_code,
+        "locality_name": business.locality_name,
+        "geo_catalog_version_id": business.geo_catalog_version_id,
+    }, "Ubicación del negocio actualizada.")
 
 
 @bp.get("/current/hours")
@@ -258,10 +447,60 @@ def create_delivery_zone():
     name = (data.get("name") or "").strip()
     if not name:
         return error("name is required", 400)
-    zone = BusinessDeliveryZone(business_id=g.current_business.id, name=name, is_active=data.get("is_active", True))
+    settlement_names = _normalize_settlement_names(data.get("settlement_names", []))
+    if settlement_names is None:
+        return error("Las colonias deben ser una lista de nombres de hasta 200 caracteres.", 400)
+    zone = BusinessDeliveryZone(
+        business_id=g.current_business.id,
+        name=name,
+        is_active=data.get("is_active", True),
+        settlement_names=settlement_names,
+    )
     db.session.add(zone)
     db.session.commit()
     return success(zone.to_dict(), "Delivery zone created", 201)
+
+
+@bp.put("/current/delivery-zones/<int:zone_id>")
+@require_business("manager")
+def update_delivery_zone(zone_id):
+    zone = BusinessDeliveryZone.query.filter_by(
+        id=zone_id,
+        business_id=g.current_business.id,
+    ).first()
+    if not zone:
+        return error("Delivery zone not found", 404)
+    data = request.get_json(silent=True) or {}
+    if "name" in data:
+        name = str(data.get("name") or "").strip()
+        if not name:
+            return error("El nombre de la zona es obligatorio.", 400)
+        zone.name = name
+    if "settlement_names" in data:
+        settlement_names = _normalize_settlement_names(data["settlement_names"])
+        if settlement_names is None:
+            return error("Las colonias deben ser una lista de nombres de hasta 200 caracteres.", 400)
+        zone.settlement_names = settlement_names
+    if "settlement_keys" in data:
+        settlement_keys = _normalize_settlement_keys(data["settlement_keys"])
+        if settlement_keys is None:
+            return error("Selecciona una lista válida de hasta 1,000 asentamientos del catálogo.", 400)
+        business = g.current_business
+        if settlement_keys and (not business.geo_catalog_version_id or not business.locality_code):
+            return error("Guarda primero el catálogo y la localidad del negocio.", 400)
+        if settlement_keys:
+            valid_count = GeoSettlement.query.filter(
+                GeoSettlement.catalog_version_id == business.geo_catalog_version_id,
+                GeoSettlement.locality_code == business.locality_code,
+                GeoSettlement.source_key.in_(settlement_keys),
+            ).count()
+            if valid_count != len(settlement_keys):
+                return error("Uno o más asentamientos no pertenecen al catálogo y localidad configurados.", 400)
+        zone.settlement_keys = settlement_keys
+    if "is_active" in data:
+        zone.is_active = bool(data["is_active"])
+    db.session.commit()
+    return success(zone.to_dict(), "Delivery zone updated")
 
 
 @bp.delete("/current/delivery-zones/<int:zone_id>")

@@ -54,6 +54,7 @@ export function ProductFormDialog({
     modifiers: [],
     ingredients: [],
     imageUrl: "",
+    aliases: [],
   })
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [newCategoryName, setNewCategoryName] = useState("")
@@ -87,6 +88,7 @@ export function ProductFormDialog({
       modifiers: [],
       ingredients: [],
       imageUrl: "",
+      aliases: [],
     })
   }, [open, product, categories])
 
@@ -179,6 +181,23 @@ export function ProductFormDialog({
                         className="rounded-xl"
                         required
                       />
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="product-aliases">Nombres alternativos</Label>
+                      <Input
+                        id="product-aliases"
+                        value={(formData.aliases ?? []).join(", ")}
+                        onChange={(event) => setFormData({
+                          ...formData,
+                          aliases: event.target.value.split(",").map((alias) => alias.trim()).filter(Boolean).slice(0, 12),
+                        })}
+                        placeholder="Ej. coca, refresco de cola"
+                        className="rounded-xl"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Separa cada nombre alternativo con una coma. El nombre oficial no cambia.
+                      </p>
                     </div>
 
                     <div className="space-y-2">
@@ -287,6 +306,7 @@ export function ProductFormDialog({
                               price: 0,
                               groupName: "Ingredientes",
                               action: "add",
+                              isRequired: false,
                             },
                           ],
                         })
@@ -313,6 +333,26 @@ export function ProductFormDialog({
                               setFormData({ ...formData, modifiers })
                             }}
                           />
+                          {modifier.action === "choice" ? (
+                            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                              <input
+                                type="checkbox"
+                                checked={modifier.isRequired ?? false}
+                                onChange={(event) => {
+                                  const required = event.target.checked
+                                  setFormData({
+                                    ...formData,
+                                    modifiers: (formData.modifiers ?? []).map((row) =>
+                                      row.groupName === modifier.groupName && row.action === "choice"
+                                        ? { ...row, isRequired: required }
+                                        : row
+                                    ),
+                                  })
+                                }}
+                              />
+                              El cliente debe elegir una opción de este grupo
+                            </label>
+                          ) : null}
                         </div>
                         <div className="space-y-2">
                           <Label>Acción</Label>

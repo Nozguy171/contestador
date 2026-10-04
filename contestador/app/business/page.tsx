@@ -34,14 +34,20 @@ import {
   getBusinessSettings,
   getCurrentBusiness,
   listBusinessHours,
+  listAddressCatalogLocalities,
+  listAddressCatalogs,
+  listAddressCatalogSettlements,
   listDeliveryZones,
   listFaqs,
   listPolicies,
   replaceBusinessHours,
   updateBusinessSettings,
+  updateBusinessLocation,
+  updateDeliveryZone,
   updateCurrentBusiness,
   updateFaq,
 } from "@/lib/api"
+import type { AddressCatalogVersion, AddressLocality, AddressSettlement, DeliveryZone } from "@/lib/api"
 import type { FAQ } from "@/lib/types"
 import {
   Building2,
@@ -76,6 +82,8 @@ type HourForm = {
   is_closed: boolean
 }
 
+type DeliveryZoneForm = DeliveryZone
+
 const defaultHours: HourForm[] = dayLabels.map((_, index) => ({
   day_of_week: index,
   open_time: "09:00",
@@ -99,7 +107,14 @@ export default function BusinessPage() {
     minimumOrderDelivery: 0,
     deliveryFee: 0,
   })
-  const [deliveryZones, setDeliveryZones] = useState<Array<{ id: number; name: string }>>([])
+  const [deliveryZones, setDeliveryZones] = useState<DeliveryZoneForm[]>([])
+  const [addressCatalogs, setAddressCatalogs] = useState<AddressCatalogVersion[]>([])
+  const [addressLocalities, setAddressLocalities] = useState<AddressLocality[]>([])
+  const [addressSettlements, setAddressSettlements] = useState<AddressSettlement[]>([])
+  const [geoCatalogVersionId, setGeoCatalogVersionId] = useState("")
+  const [localityCode, setLocalityCode] = useState("")
+  const [voiceAddressMode, setVoiceAddressMode] = useState<"off" | "shadow" | "candidate" | "enforce">("off")
+  const [voiceMenuV2Enabled, setVoiceMenuV2Enabled] = useState(false)
   const [policies, setPolicies] = useState<Array<{ id: number; text: string }>>([])
   const [faqs, setFaqs] = useState<FAQ[]>([])
   const [faqDialogOpen, setFaqDialogOpen] = useState(false)
@@ -128,6 +143,7 @@ export default function BusinessPage() {
           zones,
           backendPolicies,
           backendFaqs,
+          catalogs,
         ] = await Promise.all([
           getCurrentBusiness(),
           getBusinessSettings(),
@@ -135,6 +151,7 @@ export default function BusinessPage() {
           listDeliveryZones(),
           listPolicies(),
           listFaqs(),
+          listAddressCatalogs(),
         ])
 
         setBusinessInfo({
@@ -165,7 +182,16 @@ export default function BusinessPage() {
           })
         )
 
-        setDeliveryZones(zones)
+        setDeliveryZones(zones.map((zone) => ({
+          ...zone,
+          settlement_names: zone.settlement_names ?? [],
+          settlement_keys: zone.settlement_keys ?? [],
+        })))
+        setAddressCatalogs(catalogs)
+        setGeoCatalogVersionId(business.geo_catalog_version_id ? String(business.geo_catalog_version_id) : "")
+        setLocalityCode(business.locality_code ?? "")
+        setVoiceAddressMode(settings.voice_address_mode ?? "off")
+        setVoiceMenuV2Enabled(settings.voice_menu_v2_enabled ?? false)
         setPolicies(backendPolicies)
         setFaqs(
           backendFaqs.map((faq) => ({
@@ -186,6 +212,35 @@ export default function BusinessPage() {
 
     void loadBusinessData()
   }, [])
+
+  useEffect(() => {
+    let active = true
+    if (!geoCatalogVersionId) {
+      setAddressLocalities([])
+      return
+    }
+    void listAddressCatalogLocalities(geoCatalogVersionId)
+      .then((items) => { if (active) setAddressLocalities(items) })
+      .catch((error: unknown) => {
+        if (active) setErrorMessage(error instanceof Error ? error.message : "No se pudieron cargar las localidades.")
+      })
+    return () => { active = false }
+  }, [geoCatalogVersionId])
+
+  useEffect(() => {
+    let active = true
+    if (!geoCatalogVersionId || !localityCode) {
+      setAddressSettlements([])
+      return
+    }
+    setAddressSettlements([])
+    void listAddressCatalogSettlements(geoCatalogVersionId, localityCode)
+      .then((items) => { if (active) setAddressSettlements(items) })
+      .catch((error: unknown) => {
+        if (active) setErrorMessage(error instanceof Error ? error.message : "No se pudieron cargar los asentamientos.")
+      })
+    return () => { active = false }
+  }, [geoCatalogVersionId, localityCode])
 
   const showSuccess = (message: string) => {
     setSuccessMessage(message)
@@ -253,6 +308,36 @@ export default function BusinessPage() {
       setNewDeliveryZone("")
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "No se pudo agregar la zona de entrega.")
+    }
+  }
+
+  const handleSaveVoiceAddressSettings = async () => {
+    try {
+      await updateBusinessLocation({
+        geo_catalog_version_id: geoCatalogVersionId ? Number(geoCatalogVersionId) : null,
+        locality_code: localityCode || null,
+      })
+      await updateBusinessSettings({
+        voice_address_mode: voiceAddressMode,
+        voice_menu_v2_enabled: voiceMenuV2Enabled,
+      })
+      showSuccess("Configuración de voz y domicilio actualizada.")
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "No se pudo guardar la configuración de voz.")
+    }
+  }
+
+  const handleSaveZoneCoverage = async (zone: DeliveryZoneForm) => {
+    try {
+      const saved = await updateDeliveryZone(zone.id, {
+        settlement_keys: zone.settlement_keys,
+      })
+      setDeliveryZones((current) => current.map((item) => item.id === zone.id
+        ? saved
+        : item))
+      showSuccess(`Cobertura de ${zone.name} actualizada.`)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "No se pudo guardar la cobertura de la zona.")
     }
   }
 
@@ -550,25 +635,56 @@ export default function BusinessPage() {
                     />
                   </div>
 
-                  <div className="flex flex-wrap gap-2">
+                  <div className="space-y-3">
                     {deliveryZones.map((zone) => (
-                      <Badge key={zone.id} variant="secondary" className="rounded-lg px-3 py-1.5 text-sm">
-                        {zone.name}
-                        <button
-                          className="ml-2 hover:text-destructive"
-                          onClick={() =>
-                            void deleteDeliveryZone(zone.id)
-                              .then(() => {
-                                setDeliveryZones((current) => current.filter((item) => item.id !== zone.id))
-                              })
-                              .catch((error: unknown) => {
-                                setErrorMessage(error instanceof Error ? error.message : "No se pudo eliminar la zona.")
-                              })
-                          }
-                        >
-                          ×
-                        </button>
-                      </Badge>
+                      <div key={zone.id} className="space-y-2 rounded-xl border border-border p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <p className="text-sm font-medium">{zone.name}</p>
+                            <p className="text-xs text-muted-foreground">Asentamientos del catálogo que cubre esta zona</p>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label={`Eliminar zona ${zone.name}`}
+                            onClick={() =>
+                              void deleteDeliveryZone(zone.id)
+                                .then(() => setDeliveryZones((current) => current.filter((item) => item.id !== zone.id)))
+                                .catch((error: unknown) => {
+                                  setErrorMessage(error instanceof Error ? error.message : "No se pudo eliminar la zona.")
+                                })
+                            }
+                          >
+                            <Trash2 className="h-4 w-4 text-muted-foreground" />
+                          </Button>
+                        </div>
+                        {addressSettlements.length ? (
+                          <select
+                            aria-label={`Asentamientos cubiertos de ${zone.name}`}
+                            multiple
+                            size={6}
+                            className="w-full rounded-xl border border-input bg-background px-3 py-2 text-sm"
+                            value={zone.settlement_keys}
+                            onChange={(event) => {
+                              const selectedKeys = Array.from(event.currentTarget.selectedOptions, (option) => option.value)
+                              setDeliveryZones((current) => current.map((item) =>
+                                item.id === zone.id ? { ...item, settlement_keys: selectedKeys } : item
+                              ))
+                            }}
+                          >
+                            {addressSettlements.map((settlement) => (
+                              <option key={settlement.key} value={settlement.key}>
+                                {settlement.type ? `${settlement.type} ` : ""}{settlement.name}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <p className="text-xs text-muted-foreground">Selecciona y guarda primero el catálogo y la localidad en la configuración de voz.</p>
+                        )}
+                        <div className="flex justify-end">
+                          <Button variant="outline" onClick={() => void handleSaveZoneCoverage(zone)}>Guardar cobertura</Button>
+                        </div>
+                      </div>
                     ))}
                   </div>
 
@@ -587,6 +703,89 @@ export default function BusinessPage() {
                   <Button className="w-full rounded-xl" onClick={() => void handleSaveDeliverySettings()}>
                     <Save className="mr-2 h-4 w-4" />
                     Guardar opciones de entrega
+                  </Button>
+                </CardContent>
+              </Card>
+
+              <Card className="border-border shadow-sm">
+                <CardHeader className="pb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-cyan-50">
+                      <MessageCircle className="h-5 w-5 text-cyan-700" />
+                    </div>
+                    <div>
+                      <CardTitle className="text-base">Reconocimiento de voz y domicilios</CardTitle>
+                      <CardDescription className="text-xs">Prueba primero las sugerencias antes de exigir una colonia reconocida.</CardDescription>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="geoCatalog">Catálogo geográfico</Label>
+                    <select
+                      id="geoCatalog"
+                      className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
+                      value={geoCatalogVersionId}
+                      onChange={(event) => {
+                        setGeoCatalogVersionId(event.target.value)
+                        setLocalityCode("")
+                      }}
+                    >
+                      <option value="">Sin catálogo seleccionado</option>
+                      {addressCatalogs.map((catalog) => (
+                        <option key={catalog.id} value={catalog.id}>
+                          {catalog.entity_name ?? catalog.entity_code} · {catalog.municipality_name ?? catalog.municipality_code} · {catalog.edition}
+                        </option>
+                      ))}
+                    </select>
+                    {addressCatalogs.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">Aún no hay catálogos importados; consulta la guía de operación para cargar INEGI.</p>
+                    ) : null}
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="businessLocality">Localidad del negocio</Label>
+                    <select
+                      id="businessLocality"
+                      className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
+                      value={localityCode}
+                      disabled={!geoCatalogVersionId || addressLocalities.length === 0}
+                      onChange={(event) => setLocalityCode(event.target.value)}
+                    >
+                      <option value="">Selecciona localidad</option>
+                      {addressLocalities.map((locality) => (
+                        <option key={locality.code} value={locality.code}>{locality.name}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="voiceAddressMode">Validación de domicilio en llamadas</Label>
+                    <select
+                      id="voiceAddressMode"
+                      className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
+                      value={voiceAddressMode}
+                      onChange={(event) => setVoiceAddressMode(event.target.value as typeof voiceAddressMode)}
+                    >
+                      <option value="off">Apagada (comportamiento actual)</option>
+                      <option value="shadow">Sombra (mide sugerencias, no cambia el pedido)</option>
+                      <option value="candidate">Sugerencias con confirmación del cliente</option>
+                      <option value="enforce">Exigir colonia reconocida y cubierta</option>
+                    </select>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-4 rounded-xl border border-border p-4">
+                    <div>
+                      <p className="text-sm font-medium">Menú conversacional paginado</p>
+                      <p className="text-xs text-muted-foreground">Permite explorar categorías y páginas sin cortar el menú a 12 productos.</p>
+                    </div>
+                    <Switch checked={voiceMenuV2Enabled} onCheckedChange={setVoiceMenuV2Enabled} />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Para usar “Exigir”, guarda primero catálogo y localidad, después asigna asentamientos del catálogo a tus zonas.
+                  </p>
+                  <Button className="w-full rounded-xl" onClick={() => void handleSaveVoiceAddressSettings()}>
+                    <Save className="mr-2 h-4 w-4" /> Guardar configuración de voz
                   </Button>
                 </CardContent>
               </Card>

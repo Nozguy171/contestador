@@ -5,7 +5,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from app.api import register_blueprints
 from app.api.voice_socket import register_voice_socket
-from app.cli import create_admin
+from app.cli import create_admin, import_address_catalog
 from app.config import config_by_name
 from app.extensions import cors, db, jwt, migrate, sock
 from app.utils.responses import error
@@ -28,6 +28,7 @@ def create_app(config_name=None):
     register_blueprints(app)
     register_voice_socket(app)
     app.cli.add_command(create_admin)
+    app.cli.add_command(import_address_catalog)
 
     @app.errorhandler(404)
     def handle_404(_):

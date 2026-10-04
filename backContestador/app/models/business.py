@@ -16,6 +16,19 @@ class Business(TimestampMixin, SerializerMixin, db.Model):
     human_transfer_number = db.Column(db.String(32), nullable=True)
     email = db.Column(db.String(255), nullable=True)
     estimated_delivery_time = db.Column(db.String(120), nullable=True)
+    country_code = db.Column(db.String(2), nullable=True)
+    state_code = db.Column(db.String(2), nullable=True)
+    state_name = db.Column(db.String(120), nullable=True)
+    municipality_code = db.Column(db.String(3), nullable=True)
+    municipality_name = db.Column(db.String(160), nullable=True)
+    locality_code = db.Column(db.String(4), nullable=True)
+    locality_name = db.Column(db.String(160), nullable=True)
+    geo_catalog_version_id = db.Column(
+        db.Integer,
+        db.ForeignKey("geo_catalog_versions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     users = db.relationship("BusinessUser", back_populates="business", cascade="all, delete-orphan")
     hours = db.relationship("BusinessHour", back_populates="business", cascade="all, delete-orphan")
@@ -37,6 +50,7 @@ class Business(TimestampMixin, SerializerMixin, db.Model):
         back_populates="business",
         cascade="all, delete-orphan",
     )
+    geo_catalog_version = db.relationship("GeoCatalogVersion")
 
 
 class BusinessUser(db.Model, SerializerMixin):
@@ -93,8 +107,17 @@ class BusinessSetting(TimestampMixin, SerializerMixin, db.Model):
         default="America/Mexico_City",
         server_default="America/Mexico_City",
     )
+    voice_address_mode = db.Column(db.String(16), nullable=False, default="off", server_default="off")
+    voice_menu_v2_enabled = db.Column(db.Boolean, nullable=False, default=False, server_default=db.false())
 
     business = db.relationship("Business", back_populates="settings")
+
+    __table_args__ = (
+        db.CheckConstraint(
+            "voice_address_mode IN ('off', 'shadow', 'candidate', 'enforce')",
+            name="ck_business_settings_voice_address_mode",
+        ),
+    )
 
 
 class BusinessDeliveryZone(db.Model, SerializerMixin):
@@ -104,6 +127,8 @@ class BusinessDeliveryZone(db.Model, SerializerMixin):
     business_id = db.Column(db.Integer, db.ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False, index=True)
     name = db.Column(db.String(160), nullable=False)
     is_active = db.Column(db.Boolean, nullable=False, default=True, server_default=db.true())
+    settlement_names = db.Column(JSON_VARIANT, nullable=False, default=list, server_default="[]")
+    settlement_keys = db.Column(JSON_VARIANT, nullable=False, default=list, server_default="[]")
 
     business = db.relationship("Business", back_populates="delivery_zones")
 

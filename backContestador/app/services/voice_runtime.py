@@ -63,6 +63,8 @@ class VoiceRuntimeConfig:
     twilio_status_callback_url: str
     gemini_api_key: str
     gemini_model: str
+    voice_transcript_events_v2: bool
+    voice_audio_diagnostics: bool
     gemini_http_api_version: str
     gemini_voice_name: str
     gemini_language_code: str
@@ -89,7 +91,9 @@ class VoiceRuntimeConfig:
             twilio_validate_signature=bool(config.get("TWILIO_VALIDATE_SIGNATURE", False)),
             twilio_status_callback_url=config.get("TWILIO_STATUS_CALLBACK_URL", ""),
             gemini_api_key=config.get("GEMINI_API_KEY", ""),
-            gemini_model=config.get("GEMINI_MODEL", "gemini-3.1-flash-live-preview"),
+            gemini_model=config.get("VOICE_LIVE_MODEL") or config.get("GEMINI_MODEL", "gemini-3.8-live"),
+            voice_transcript_events_v2=bool(config.get("VOICE_TRANSCRIPT_EVENTS_V2", False)),
+            voice_audio_diagnostics=bool(config.get("VOICE_AUDIO_DIAGNOSTICS", True)),
             gemini_http_api_version=config.get("GEMINI_HTTP_API_VERSION", "v1beta"),
             gemini_voice_name=(
                 business_voice
@@ -168,6 +172,8 @@ class VoiceRuntimeConfig:
                 "voice_name": self.gemini_voice_name,
                 "language_code": self.gemini_language_code,
                 "response_modality": "AUDIO",
+                "transcript_events_v2": self.voice_transcript_events_v2,
+                "audio_diagnostics": self.voice_audio_diagnostics,
             },
             "vad": {
                 "start_of_speech_sensitivity": self.voice_start_of_speech_sensitivity,
@@ -202,6 +208,27 @@ def build_business_voice_context(business: Any) -> dict[str, Any]:
             }
         )
 
+    active_zones = [zone for zone in business.delivery_zones if zone.is_active]
+    configured_settlement_keys = {
+        str(key)
+        for zone in active_zones
+        for key in (zone.settlement_keys or [])
+    }
+    settlement_names_by_key = {}
+    if business.geo_catalog_version_id and configured_settlement_keys:
+        from app.models import GeoSettlement
+
+        settlements = GeoSettlement.query.filter(
+            GeoSettlement.catalog_version_id == business.geo_catalog_version_id,
+            GeoSettlement.locality_code == business.locality_code,
+            GeoSettlement.source_key.in_(configured_settlement_keys),
+        ).all()
+        settlement_names_by_key = {
+            item.source_key: f"{item.settlement_type} {item.name}".strip()
+            for item in settlements
+        }
+    voice_address_mode = getattr(settings, "voice_address_mode", "off") if settings else "off"
+
     return {
         "business_name": business.name,
         "address": business.address,
@@ -210,7 +237,29 @@ def build_business_voice_context(business: Any) -> dict[str, Any]:
         "email": business.email,
         "estimated_delivery_time": business.estimated_delivery_time,
         "hours": hours,
-        "delivery_zones": [zone.name for zone in business.delivery_zones if zone.is_active],
+        "delivery_zones": [zone.name for zone in active_zones],
+        "delivery_zone_coverage": [
+            {
+                "name": zone.name,
+                "settlements": (
+                    [settlement_names_by_key[key] for key in zone.settlement_keys if key in settlement_names_by_key]
+                    if zone.settlement_keys
+                    else list(zone.settlement_names or []) if voice_address_mode == "off" else []
+                ),
+            }
+            for zone in active_zones
+        ],
+        "location": {
+            "country_code": business.country_code,
+            "state_code": business.state_code,
+            "state_name": business.state_name,
+            "municipality_code": business.municipality_code,
+            "municipality_name": business.municipality_name,
+            "locality_code": business.locality_code,
+            "locality_name": business.locality_name,
+            "catalog_version_id": business.geo_catalog_version_id,
+            "catalog_edition": business.geo_catalog_version.edition if business.geo_catalog_version else None,
+        },
         "promotions": [
             promotion_description(promotion)
             for promotion in business.promotions
@@ -250,6 +299,8 @@ def build_business_voice_context(business: Any) -> dict[str, Any]:
             "accept_online": settings.accept_online if settings else True,
             "cash_only_threshold": str(settings.cash_only_threshold) if settings and settings.cash_only_threshold is not None else None,
             "require_prepayment": settings.require_prepayment if settings else False,
+            "voice_address_mode": settings.voice_address_mode if settings else "off",
+            "voice_menu_v2_enabled": settings.voice_menu_v2_enabled if settings else False,
         },
         "bot": {
             "welcome_message": bot_config.welcome_message if bot_config else None,
@@ -268,12 +319,24 @@ def build_gemini_system_prompt(business: Any) -> str:
     context = build_business_voice_context(business)
     settings = context["settings"]
     bot = context["bot"]
+    location = context["location"]
+    address_mode = settings["voice_address_mode"]
+    menu_instructions = (
+        "- Para explorar el menú, llama list_menu_categories; presenta categorías brevemente y busca los productos pedidos con search_menu usando category_id y page. "
+        "Ofrece la siguiente página sólo si el cliente pide ver más. Usa resolve_menu_item para nombres dudosos o alias y pide aclaración si devuelve varios candidatos."
+        if settings["voice_menu_v2_enabled"]
+        else "- Para conocer el menú completo llama search_menu con query vacío; para buscar un producto concreto usa search_menu y después get_item_options."
+    )
     faq_lines = "\n".join(
         f"- {faq['question']}: {faq['answer']}" for faq in context["faqs"]
     ) or "- No hay FAQs configuradas todavía."
     promotion_lines = "\n".join(f"- {item}" for item in context["promotions"]) or "- Sin promociones activas."
     policy_lines = "\n".join(f"- {item}" for item in context["policies"]) or "- Sin políticas activas."
     zone_lines = "\n".join(f"- {item}" for item in context["delivery_zones"]) or "- Sin zonas de entrega configuradas."
+    coverage_lines = "\n".join(
+        f"- {zone['name']}: {', '.join(zone['settlements']) if zone['settlements'] else 'cobertura sin catálogo'}"
+        for zone in context["delivery_zone_coverage"]
+    ) or "- Sin zonas configuradas."
     menu_rule_lines = "\n".join(
         f"- {rule['name']} ({rule['type']}): {rule['description'] or rule['config']}"
         for rule in context["menu_rules"]
@@ -309,6 +372,15 @@ Entrega:
 - Tiempo estimado de preparación: {settings['estimated_prep_time_minutes'] or 'No configurado'}
 - Zonas activas:
 {zone_lines}
+- Colonias configuradas por zona:
+{coverage_lines}
+
+Ubicación oficial del negocio:
+- País: {location['country_code'] or 'No configurado'}
+- Estado: {location['state_name'] or 'No configurado'}
+- Municipio: {location['municipality_name'] or 'No configurado'}
+- Localidad: {location['locality_name'] or 'No configurada'}
+- Edición del catálogo vial: {location['catalog_edition'] or 'Sin catálogo importado'}
 
 Pagos:
 - Efectivo: {'sí' if settings['accept_cash'] else 'no'}
@@ -351,22 +423,27 @@ Reglas:
 - No inventes productos, horarios, precios ni promociones.
 - Nunca aceptes ni propongas un tenantId o businessId: la sesión ya está ligada al negocio correcto.
 - No calcules precios ni asumas disponibilidad. Usa siempre las herramientas del backend.
-- Para conocer el menú completo llama search_menu con query vacío; no busques literalmente la palabra "menú".
-- Para buscar un producto concreto usa search_menu y después get_item_options para confirmar precio y disponibilidad.
+{menu_instructions}
+- No enumeres todo el menú de golpe. Confirma precio y disponibilidad con get_item_options antes de agregar un producto.
 - Cuando el cliente diga un producto y cantidad, llama inmediatamente add_to_cart; no esperes hasta el final ni afirmes que lo agregaste sin ok=true.
-- Si search_menu no encuentra un producto, dilo claramente en ese momento y no lo agregues al carrito. Si el cliente acepta continuar sin él, llama resolve_unavailable_item antes de cotizar.
+- Si search_menu o resolve_menu_item no encuentra un producto, no lo agregues: registra el nombre con mark_unavailable_item, informa que no está en el menú y pregunta si quiere seguir sin él. Sólo después de que acepte, llama resolve_unavailable_item antes de cotizar. Si get_item_options dice que está agotado, sigue el mismo flujo; si hay candidatos disponibles, aclara cuál pidió.
 - Antes de cotizar llama get_cart. Si el carrito está vacío, no digas que se perdió: todavía no se había agregado y debes pedir el producto y la cantidad.
-- Mantén el pedido únicamente mediante add_to_cart y remove_item.
+- Mantén el pedido mediante add_to_cart, update_cart_line y remove_item. add_to_cart siempre suma una cantidad nueva; si el cliente corrige la cantidad o las personalizaciones de una línea existente usa update_cart_line con el line_id y la cantidad final.
 - Si falta información, dilo claramente y ofrece transfer_to_human.
 - Si el negocio está cerrado, usa el mensaje fuera de horario como base.
 - Haz una sola pregunta a la vez y espera la respuesta; no juntes nombre, tipo de pedido, dirección y pago en una sola pregunta.
 - Cuando el pedido ya esté armado, recopila nombre, tipo de pedido y pago de forma natural, una pregunta por turno. Puedes decir "¿A nombre de quién lo registro?", "¿Lo recoges aquí o te lo enviamos?" y "¿Cómo te gustaría pagar?", pero no expliques por qué preguntas ni presentes una lista.
 - Antes de cotizar debes tener esos datos, aunque el cliente los haya dado espontáneamente en otro orden.
 - Si es entrega a domicilio y el pago es en efectivo, pregunta de forma natural si necesita cambio. Si sí, pregunta con qué cantidad pagará y usa ese monto en cash_change_for; si no necesita cambio, omite ese campo. Para recoger en tienda no preguntes ni guardes cambio y no pidas dirección.
-- Este negocio atiende en Mexicali, Baja California, México. En una entrega local no preguntes el país ni el estado: son datos innecesarios.
-- Si el cliente no menciona otra ciudad, usa Mexicali como ciudad de entrega sin preguntarla. Pregunta la ciudad sólo si dice que está fuera de Mexicali o si hay una ambigüedad real.
+- No supongas una ciudad, estado o país a partir de la ubicación del servidor. Usa únicamente la ubicación configurada del negocio.
+- Si el negocio tiene localidad configurada y el cliente pide una entrega local, puedes usar esa localidad sin preguntarla. Si no está configurada o el cliente menciona otra ciudad, pregunta la localidad con naturalidad.
 - Si requiere entrega, recopila la dirección por partes: primero calle, luego número, luego colonia y por último referencias. Pide sólo un dato por pregunta y repite cada dato para confirmar; si el número no está claro, pide que lo diga dígito por dígito.
-- Para delivery llama quote_order usando delivery_address_parts con street, number, colony, city y references. Nunca cotices una entrega sin esos campos.
+- Modo de resolución de domicilio actual: {address_mode}.
+- En modo off, usa delivery_address_parts con street, number, colony, city y references en quote_order como antes.
+- En modo shadow, conserva literalmente lo que dijo el cliente, llama resolve_delivery_address para medir candidatos y sigue con quote_order usando los datos originales. Nunca sustituyas silenciosamente lo dicho por una calle o colonia parecida.
+- En modo candidate o enforce, llama resolve_delivery_address cuando tengas calle, número, colonia y localidad. Si hay más de un candidato, pregunta cuál coincide. Lee en voz alta el candidato y los números tal como los dijo el cliente, pide un sí claro y llama confirm_delivery_address con los IDs devueltos sólo después de ese sí. No cotices antes de que el servidor confirme la dirección.
+- En modo enforce, además comprueba que el resultado diga in_coverage. Si la cobertura es unknown o out_of_coverage, no prometas entrega ni cotices a domicilio; ofrece recoger o transferir a una persona.
+- Los números, números interiores, códigos postales y referencias se preservan exactamente como fueron dichos y nunca se corrigen por similitud.
 - Antes de confirmar un pedido llama quote_order, repite productos, cantidades, total, tipo de entrega y pago, y pide un sí explícito.
 - Llama submit_order únicamente después de ese sí explícito, usando el token de la cotización vigente y confirmed=true.
 - Solo di que el pedido quedó registrado después de que submit_order responda con ok=true.
